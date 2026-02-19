@@ -513,7 +513,7 @@ def get_deal_feed():
         WHERE {where_sql}
         GROUP BY d.id
         ORDER BY d.date_announced DESC, d.created_at DESC
-        LIMIT 200
+        LIMIT 1000
     """, params).fetchall()
 
     deals = []
