@@ -652,11 +652,26 @@ def _generate_diverse_queries() -> List[str]:
     for loc in locations[:2]:  # NYC and "New York" only to limit total
         for sector in sectors:
             queries.append(f"{loc} {sector} startup funding")
-    # Amount-based queries
+    # Amount-based queries (by year to catch historical deals)
     for loc in locations[:2]:
-        queries.append(f"{loc} startup raises million 2025")
-        queries.append(f"{loc} startup raises million 2026")
+        for year in ["2024", "2025", "2026"]:
+            queries.append(f"{loc} startup raises million {year}")
+            queries.append(f"{loc} startup funding round {year}")
         queries.append(f"{loc} startup raises $")
+
+    # Historical 2024 queries — quarter-specific to maximize Bing coverage
+    quarters_2024 = [
+        ("Q1 2024", "January February March 2024"),
+        ("Q2 2024", "April May June 2024"),
+        ("Q3 2024", "July August September 2024"),
+        ("Q4 2024", "October November December 2024"),
+    ]
+    for loc in locations[:2]:
+        for _, months in quarters_2024:
+            queries.append(f"{loc} startup raises funding {months}")
+        # Sector × year for 2024
+        for sector in sectors[:10]:
+            queries.append(f"{loc} {sector} startup funding 2024")
     # Publication-scoped queries
     for site in ["techcrunch.com", "forbes.com", "venturebeat.com",
                   "crunchbase.com", "businessinsider.com"]:
@@ -954,19 +969,23 @@ def run_google_batch(batch_size: int = 15, days_back: int = 450):
     consecutive_fails = 0
 
     for query in batch:
-        if consecutive_fails >= 3:
+        if consecutive_fails >= 5:
             logger.warning(f"Google rate-limited, stopping batch after {consecutive_fails} consecutive fails")
             break
         articles = scrape_google_news(query, max_results=20)
         if not articles:
             consecutive_fails += 1
+            logger.info(f"  Query {len(completed_set)+1}: 0 results (fail #{consecutive_fails})")
         else:
             consecutive_fails = 0
             for a in articles:
                 a["nyc_confirmed"] = True
             all_articles.extend(articles)
             completed_set.add(query)
-        time.sleep(3.0 + (consecutive_fails * 5.0))
+            logger.info(f"  Query {len(completed_set)}: {len(articles)} articles")
+        # Long delays to avoid rate limiting: 8s base, +10s per fail
+        delay = 8.0 + (consecutive_fails * 10.0)
+        time.sleep(delay)
 
     # Process articles
     total_new = 0
