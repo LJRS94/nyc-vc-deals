@@ -6,6 +6,8 @@ Serves deal data to the React dashboard.
 import os
 import sys
 import json
+import threading
+import logging
 from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -642,10 +644,92 @@ def get_categories():
     return jsonify([dict(r) for r in rows])
 
 
+# ── Background Scraping ──────────────────────────────────────
+
+_scrape_lock = threading.Lock()
+_scrape_status = {"running": False, "last_run": None, "last_result": None}
+
+logger = logging.getLogger("api_server")
+
+
+def _run_scrape_background():
+    """Run a scrape in a background thread."""
+    if not _scrape_lock.acquire(blocking=False):
+        return  # already running
+    try:
+        _scrape_status["running"] = True
+        _scrape_status["last_run"] = datetime.now().isoformat()
+        logger.info("Background scrape starting...")
+
+        from scrapers.news_scraper import run_news_scraper
+        from scrapers.alleywatch_scraper import run_alleywatch_scraper
+
+        # Run the main scrapers (skip Google to avoid rate limits,
+        # Bing + RSS + BuiltInNYC + Crunchbase News will run)
+        run_news_scraper(days_back=180)
+        run_alleywatch_scraper(days_back=180)
+
+        conn = get_connection()
+        deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+        conn.close()
+
+        _scrape_status["last_result"] = f"Completed. {deal_count} total deals."
+        logger.info(f"Background scrape complete: {deal_count} deals")
+
+    except Exception as e:
+        _scrape_status["last_result"] = f"Error: {e}"
+        logger.error(f"Background scrape failed: {e}")
+    finally:
+        _scrape_status["running"] = False
+        _scrape_lock.release()
+
+
+def _start_scheduler():
+    """Start a background thread that runs scrapes every 2 hours."""
+    import time
+
+    def scheduler_loop():
+        # Wait 60s after startup before first scrape
+        time.sleep(60)
+        while True:
+            _run_scrape_background()
+            # Sleep 2 hours between scrapes
+            time.sleep(2 * 60 * 60)
+
+    t = threading.Thread(target=scheduler_loop, daemon=True)
+    t.start()
+    logger.info("Background scraper scheduled: every 2 hours")
+
+
+@app.route("/api/scrape", methods=["POST"])
+def trigger_scrape():
+    """Manually trigger a background scrape."""
+    if _scrape_status["running"]:
+        return jsonify({"status": "already_running", **_scrape_status}), 409
+    threading.Thread(target=_run_scrape_background, daemon=True).start()
+    return jsonify({"status": "started", "message": "Scrape started in background"})
+
+
+@app.route("/api/scrape/status", methods=["GET"])
+def scrape_status():
+    """Check the status of background scraping."""
+    conn = get_connection()
+    deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+    conn.close()
+    return jsonify({**_scrape_status, "total_deals": deal_count})
+
+
+# Start the scheduler when running under gunicorn (production)
+if not os.environ.get("FLASK_DEBUG"):
+    _start_scheduler()
+
+
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "false").lower() in ("1", "true", "yes")
+    if not debug:
+        _start_scheduler()
     app.run(debug=debug, host="0.0.0.0", port=port)
 
 
