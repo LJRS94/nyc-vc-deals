@@ -24,6 +24,7 @@ from fetcher import fetch, NEWS_TTL
 from scrapers.utils import (
     classify_sector as _classify_sector, normalize_stage as _normalize_stage,
     parse_amount as _parse_amount, normalize_company_name, company_names_match,
+    should_skip_deal,
 )
 
 logger = logging.getLogger(__name__)
@@ -541,6 +542,12 @@ def process_deal(conn, title: str, url: str, full_text: str,
     amount = extract_amount(full_text, title=title)
     category_name = detect_category(combined_text)
     investors = extract_investors(combined_text)
+
+    # Skip VC firms and deals > $50M
+    skip = should_skip_deal(conn, company_name, amount)
+    if skip:
+        logger.debug(f"Skipping deal: {skip}")
+        return None
 
     # Check for duplicates
     existing = conn.execute(

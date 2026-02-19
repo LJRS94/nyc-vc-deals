@@ -29,6 +29,7 @@ from database import (
 )
 from fetcher import fetch, SEC_HEADERS
 from news_scraper import detect_category, is_nyc_related, extract_amount, detect_stage
+from scrapers.utils import should_skip_deal
 
 logger = logging.getLogger(__name__)
 
@@ -572,8 +573,11 @@ def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[in
         elif amount < 80_000_000:
             stage = "Series B"
 
-    # Skip if too large for early stage
-    if amount and amount > 100_000_000:
+    # Skip if too large for early stage or if it's a VC firm
+    if amount and amount > 50_000_000:
+        return None
+    skip = should_skip_deal(conn, company_name, amount)
+    if skip:
         return None
 
     cat_id = get_category_id(conn, category_name)
@@ -719,6 +723,11 @@ def run_delaware_scraper(days_back: int = 14):
                 stage = detect_stage(full_text)
                 category_name = detect_category(full_text)
                 investors = extract_investors(full_text)
+
+                # Skip VC firms and deals > $50M
+                skip = should_skip_deal(conn, company_name, amount)
+                if skip:
+                    continue
 
                 existing = conn.execute(
                     "SELECT id FROM deals WHERE company_name = ?",

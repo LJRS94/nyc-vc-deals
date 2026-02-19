@@ -203,6 +203,64 @@ def company_names_match(a: str, b: str, threshold: float = 0.85) -> bool:
     return False
 
 
+# ── Deal filters ─────────────────────────────────────────────
+
+MAX_EARLY_STAGE_AMOUNT = 50_000_000  # $50M cap for early-stage deals
+
+_firm_names_cache = None  # cached set of normalized firm names
+
+
+def _get_firm_names(conn) -> set:
+    """Load and cache normalized firm names from DB."""
+    global _firm_names_cache
+    if _firm_names_cache is None:
+        rows = conn.execute("SELECT name FROM firms").fetchall()
+        _firm_names_cache = set()
+        for r in rows:
+            _firm_names_cache.add(normalize_company_name(r["name"]))
+    return _firm_names_cache
+
+
+def clear_firm_cache():
+    """Clear the firm name cache (call after seeding firms)."""
+    global _firm_names_cache
+    _firm_names_cache = None
+
+
+def is_vc_firm(conn, company_name: str) -> bool:
+    """Check if a 'company' is actually a VC firm in our database."""
+    if not company_name:
+        return False
+    norm = normalize_company_name(company_name)
+    if not norm or len(norm) < 3:
+        return False
+    firm_names = _get_firm_names(conn)
+    # Exact normalized match
+    if norm in firm_names:
+        return True
+    # Containment match (e.g. "Insight Partners Fund" contains "insightpartners")
+    for fn in firm_names:
+        if len(fn) >= 5 and (fn in norm or norm in fn):
+            shorter, longer = (fn, norm) if len(fn) <= len(norm) else (norm, fn)
+            if len(shorter) / len(longer) >= 0.7:
+                return True
+    return False
+
+
+def should_skip_deal(conn, company_name: str, amount: float = None) -> str:
+    """
+    Returns a reason string if the deal should be skipped, or None if it's OK.
+    Checks:
+    1. Company is a known VC firm (not a startup)
+    2. Amount exceeds $50M (not early-stage)
+    """
+    if is_vc_firm(conn, company_name):
+        return f"VC firm: {company_name}"
+    if amount and amount > MAX_EARLY_STAGE_AMOUNT:
+        return f"Amount ${amount/1e6:.0f}M exceeds $50M cap"
+    return None
+
+
 # ── Investor parsing ──────────────────────────────────────────
 
 def parse_investors(text: str) -> Tuple[List[str], Optional[str]]:

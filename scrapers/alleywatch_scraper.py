@@ -31,7 +31,7 @@ from database import (
 from fetcher import fetch, fetch_many
 from scrapers.utils import (
     normalize_stage, parse_amount, classify_sector,
-    parse_investors, normalize_company_name,
+    parse_investors, normalize_company_name, should_skip_deal,
 )
 
 logger = logging.getLogger(__name__)
@@ -505,6 +505,12 @@ def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
 
     if deal_exists(conn, company, amount):
         logger.debug(f"  Skipping duplicate: {company}")
+        return None
+
+    # Skip VC firms and deals > $50M
+    skip = should_skip_deal(conn, company, amount)
+    if skip:
+        logger.debug(f"  Skipping: {skip}")
         return None
 
     # Determine category

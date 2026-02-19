@@ -712,10 +712,12 @@ def _run_scrape_background():
         from scrapers.news_scraper import run_news_scraper
         from scrapers.alleywatch_scraper import run_alleywatch_scraper
         from scrapers.firm_scraper import seed_firms
+        from scrapers.utils import clear_firm_cache
 
         # Seed firms (including firms.json with 100 firms)
         try:
             seed_firms()
+            clear_firm_cache()  # refresh cache after seeding
         except Exception as e:
             logger.warning(f"Firm seeding warning: {e}")
 
