@@ -289,9 +289,6 @@ def run_sec_scraper(days_back: int = 180):
                 # Filter: only early-stage deals
                 if stage not in ["Pre-Seed", "Seed", "Series A", "Series B", "Unknown"]:
                     continue
-                if amount and amount > 50_000_000:
-                    continue  # too large for early stage
-
                 # Skip VC firms
                 skip = should_skip_deal(conn, company_name, amount)
                 if skip:

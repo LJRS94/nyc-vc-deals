@@ -82,6 +82,7 @@
       const [stgF, setStgF] = useState("All");
       const [catF, setCatF] = useState("All");
       const [sort, setSort] = useState({f:"amount_usd",d:"desc"});
+      const [earlyOnly, setEarlyOnly] = useState(true);
       const [fSort, setFSort] = useState({f:"total_invested",d:"desc"});
       const [selFirm, setSelFirm] = useState(null);
       const [selCat, setSelCat] = useState(null);
@@ -125,6 +126,7 @@
       /* Filtered + sorted deals */
       const rows = useMemo(() => {
         let d = [...deals];
+        if (earlyOnly) d = d.filter(x => !x.amount_usd || x.amount_usd <= 50000000);
         if (stgF !== "All") d = d.filter(x => x.stage === stgF);
         if (catF !== "All") d = d.filter(x => x.category === catF);
         if (selFirm) d = d.filter(x => (x.firms||[]).includes(selFirm) || (x.lead_firms||[]).includes(selFirm));
@@ -145,7 +147,7 @@
           return sort.d==="asc"?(va<vb?-1:va>vb?1:0):(va>vb?-1:va<vb?1:0);
         });
         return d;
-      }, [deals, q, stgF, catF, sort, selFirm]);
+      }, [deals, q, stgF, catF, sort, selFirm, earlyOnly]);
 
       /* Firm aggregates from deals */
       const firmAgg = useMemo(() => {
@@ -228,6 +230,11 @@
             {["All",...allCats].map(v=>{const on=catF===v;const c=CC[v]||"#7c3aed";
               return <button key={v} onClick={()=>setCatF(v)} className={`pill ${on?"on":""}`}
                 style={{borderColor:on?c+"55":"#1a1b2e",background:on?c+"14":"transparent",color:on?c:"#52536b"}}>{(v||"").split("/")[0].trim()}</button>;})}
+            <div style={{width:1,height:16,background:"#1a1b2e"}} />
+            <button onClick={()=>setEarlyOnly(!earlyOnly)} className={`pill ${earlyOnly?"on":""}`}
+              style={{borderColor:earlyOnly?"#22c55e55":"#1a1b2e",background:earlyOnly?"#22c55e14":"transparent",color:earlyOnly?"#22c55e":"#52536b",fontWeight:earlyOnly?700:500}}>
+              {earlyOnly ? "Early Stage ≤$50M" : "All Stages"}
+            </button>
             {activeF.length>0 && <button onClick={clearAll} style={{marginLeft:"auto",padding:"3px 10px",borderRadius:3,border:"1px solid #7c3aed30",background:"#7c3aed0c",color:"#a78bfa",fontSize:10.5,fontWeight:600}}>✕ Clear {activeF.length}</button>}
           </div>
 

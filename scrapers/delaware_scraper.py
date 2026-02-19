@@ -573,9 +573,7 @@ def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[in
         elif amount < 80_000_000:
             stage = "Series B"
 
-    # Skip if too large for early stage or if it's a VC firm
-    if amount and amount > 50_000_000:
-        return None
+    # Skip if it's a VC firm
     skip = should_skip_deal(conn, company_name, amount)
     if skip:
         return None

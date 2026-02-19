@@ -67,34 +67,27 @@ def classify_stage_from_amount(amount: Optional[float]) -> str:
 # ── Amount parsing ────────────────────────────────────────────
 
 def parse_amount(text: str) -> Optional[float]:
-    """Extract dollar amount from strings like '$30M', '$4.5 million', '30000000'.
-    Caps at $50M — this is an early-stage VC tracker. Billion-dollar amounts
-    are almost always valuations, not round sizes."""
+    """Extract dollar amount from strings like '$30M', '$4.5 million', '30000000'."""
     if not text:
         return None
     clean = text.replace(",", "").strip()
-
-    # Skip billion-dollar amounts entirely — these are valuations, not rounds
+    # Prefer dollar-prefixed amounts with multiplier suffix
     m = re.search(r"\$\s*(\d[\d.]*)\s*(B|billion)", clean, re.I)
     if m:
-        return None  # valuations, not deal sizes
-    m = re.search(r"(\d[\d.]*)\s*(B|billion)", clean, re.I)
-    if m:
-        return None
-
-    # Dollar-prefixed with M/million
+        return float(m.group(1)) * 1_000_000_000
     m = re.search(r"\$\s*(\d[\d.]*)\s*(M|million|mm)", clean, re.I)
     if m:
-        val = float(m.group(1)) * 1_000_000
-        return val if val <= MAX_EARLY_STAGE_AMOUNT else None
+        return float(m.group(1)) * 1_000_000
     m = re.search(r"\$\s*(\d[\d.]*)\s*(K|thousand)", clean, re.I)
     if m:
         return float(m.group(1)) * 1_000
-    # Non-dollar-prefixed with multiplier
+    # Non-dollar-prefixed with explicit multiplier suffix
+    m = re.search(r"(\d[\d.]*)\s*(B|billion)", clean, re.I)
+    if m:
+        return float(m.group(1)) * 1_000_000_000
     m = re.search(r"(\d[\d.]*)\s*(M|million|mm)", clean, re.I)
     if m:
-        val = float(m.group(1)) * 1_000_000
-        return val if val <= MAX_EARLY_STAGE_AMOUNT else None
+        return float(m.group(1)) * 1_000_000
     m = re.search(r"(\d[\d.]*)\s*(K|thousand)", clean, re.I)
     if m:
         return float(m.group(1)) * 1_000
@@ -103,10 +96,9 @@ def parse_amount(text: str) -> Optional[float]:
     if m:
         val = float(m.group(1))
         if val > 100_000:
-            return val if val <= MAX_EARLY_STAGE_AMOUNT else None
+            return val
         if val > 100:
-            val = val * 1_000_000
-            return val if val <= MAX_EARLY_STAGE_AMOUNT else None
+            return val * 1_000_000
     return None
 
 
@@ -258,14 +250,10 @@ def is_vc_firm(conn, company_name: str) -> bool:
 def should_skip_deal(conn, company_name: str, amount: float = None) -> str:
     """
     Returns a reason string if the deal should be skipped, or None if it's OK.
-    Checks:
-    1. Company is a known VC firm (not a startup)
-    2. Amount exceeds $50M (not early-stage)
+    Checks if the company is actually a known VC firm (not a startup).
     """
     if is_vc_firm(conn, company_name):
         return f"VC firm: {company_name}"
-    if amount and amount > MAX_EARLY_STAGE_AMOUNT:
-        return f"Amount ${amount/1e6:.0f}M exceeds $50M cap"
     return None
 
 
