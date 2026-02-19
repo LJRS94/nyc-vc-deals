@@ -67,27 +67,34 @@ def classify_stage_from_amount(amount: Optional[float]) -> str:
 # ── Amount parsing ────────────────────────────────────────────
 
 def parse_amount(text: str) -> Optional[float]:
-    """Extract dollar amount from strings like '$30M', '$4.5 million', '30000000'."""
+    """Extract dollar amount from strings like '$30M', '$4.5 million', '30000000'.
+    Caps at $50M — this is an early-stage VC tracker. Billion-dollar amounts
+    are almost always valuations, not round sizes."""
     if not text:
         return None
     clean = text.replace(",", "").strip()
-    # Prefer dollar-prefixed amounts with multiplier suffix
+
+    # Skip billion-dollar amounts entirely — these are valuations, not rounds
     m = re.search(r"\$\s*(\d[\d.]*)\s*(B|billion)", clean, re.I)
     if m:
-        return float(m.group(1)) * 1_000_000_000
+        return None  # valuations, not deal sizes
+    m = re.search(r"(\d[\d.]*)\s*(B|billion)", clean, re.I)
+    if m:
+        return None
+
+    # Dollar-prefixed with M/million
     m = re.search(r"\$\s*(\d[\d.]*)\s*(M|million|mm)", clean, re.I)
     if m:
-        return float(m.group(1)) * 1_000_000
+        val = float(m.group(1)) * 1_000_000
+        return val if val <= MAX_EARLY_STAGE_AMOUNT else None
     m = re.search(r"\$\s*(\d[\d.]*)\s*(K|thousand)", clean, re.I)
     if m:
         return float(m.group(1)) * 1_000
-    # Non-dollar-prefixed with explicit multiplier suffix
-    m = re.search(r"(\d[\d.]*)\s*(B|billion)", clean, re.I)
-    if m:
-        return float(m.group(1)) * 1_000_000_000
+    # Non-dollar-prefixed with multiplier
     m = re.search(r"(\d[\d.]*)\s*(M|million|mm)", clean, re.I)
     if m:
-        return float(m.group(1)) * 1_000_000
+        val = float(m.group(1)) * 1_000_000
+        return val if val <= MAX_EARLY_STAGE_AMOUNT else None
     m = re.search(r"(\d[\d.]*)\s*(K|thousand)", clean, re.I)
     if m:
         return float(m.group(1)) * 1_000
@@ -96,9 +103,10 @@ def parse_amount(text: str) -> Optional[float]:
     if m:
         val = float(m.group(1))
         if val > 100_000:
-            return val
+            return val if val <= MAX_EARLY_STAGE_AMOUNT else None
         if val > 100:
-            return val * 1_000_000
+            val = val * 1_000_000
+            return val if val <= MAX_EARLY_STAGE_AMOUNT else None
     return None
 
 

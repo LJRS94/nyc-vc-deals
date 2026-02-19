@@ -712,7 +712,7 @@ def _run_scrape_background():
         from scrapers.news_scraper import run_news_scraper
         from scrapers.alleywatch_scraper import run_alleywatch_scraper
         from scrapers.firm_scraper import seed_firms
-        from scrapers.utils import clear_firm_cache
+        from scrapers.utils import clear_firm_cache, is_vc_firm
 
         # Seed firms (including firms.json with 100 firms)
         try:
@@ -720,6 +720,28 @@ def _run_scrape_background():
             clear_firm_cache()  # refresh cache after seeding
         except Exception as e:
             logger.warning(f"Firm seeding warning: {e}")
+
+        # Clean up bad deals: over $50M or VC firms listed as startups
+        conn = get_connection()
+        try:
+            # Delete deals over $50M
+            deleted_big = conn.execute(
+                "DELETE FROM deals WHERE amount_usd > 50000000"
+            ).rowcount
+            # Delete deals where company name matches a known VC firm
+            all_deals = conn.execute("SELECT id, company_name FROM deals").fetchall()
+            vc_ids = [d["id"] for d in all_deals if is_vc_firm(conn, d["company_name"])]
+            for did in vc_ids:
+                conn.execute("DELETE FROM deal_firms WHERE deal_id = ?", (did,))
+                conn.execute("DELETE FROM deal_investors WHERE deal_id = ?", (did,))
+                conn.execute("DELETE FROM deals WHERE id = ?", (did,))
+            conn.commit()
+            if deleted_big or vc_ids:
+                logger.info(f"Cleanup: removed {deleted_big} deals >$50M, {len(vc_ids)} VC-firm deals")
+        except Exception as e:
+            logger.warning(f"Cleanup warning: {e}")
+        finally:
+            conn.close()
 
         # Run the main scrapers
         run_news_scraper(days_back=180)
