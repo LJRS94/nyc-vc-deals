@@ -45,6 +45,27 @@
     .sidebar-item.on { background: #141520; }
     .empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #2a2b3d; text-align: center; }
     .loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #52536b; font-size: 14px; }
+    .user-menu { position: relative; }
+    .user-initial { width: 28px; height: 28px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: border-color .12s; display: flex; align-items: center; justify-content: center; background: #7c3aed30; color: #a78bfa; font-weight: 700; font-size: 12px; }
+    .user-initial:hover { border-color: #7c3aed; }
+    .user-dropdown { position: absolute; right: 0; top: 36px; background: #141520; border: 1px solid #1e1f35; border-radius: 6px; min-width: 180px; z-index: 100; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+    .user-dropdown a, .user-dropdown button { display: block; width: 100%; padding: 8px 14px; text-align: left; color: #bbb; font-size: 12px; border: none; background: none; cursor: pointer; font-family: inherit; text-decoration: none; }
+    .user-dropdown a:hover, .user-dropdown button:hover { background: #1e1f35; color: #eee; }
+    .star-btn { background: none; border: none; cursor: pointer; font-size: 15px; padding: 0 2px; transition: transform .1s; }
+    .star-btn:hover { transform: scale(1.2); }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 200; display: flex; align-items: center; justify-content: center; }
+    .modal { background: #141520; border: 1px solid #1e1f35; border-radius: 8px; padding: 24px; min-width: 420px; max-width: 500px; max-height: 80vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+    .modal h3 { font-size: 15px; font-weight: 700; color: #eee; margin-bottom: 16px; }
+    .modal label { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; color: #bbb; cursor: pointer; }
+    .modal label input[type="checkbox"] { accent-color: #7c3aed; }
+    .modal-section { margin-bottom: 16px; }
+    .modal-section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #555; margin-bottom: 6px; }
+    .modal input[type="number"] { width: 100px; padding: 4px 8px; border-radius: 4px; border: 1px solid #1e1f35; background: #0c0d13; color: #ddd; font-size: 12px; font-family: 'IBM Plex Mono', monospace; }
+    .modal-btn { padding: 6px 16px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; border: none; }
+    .modal-btn-primary { background: #7c3aed; color: #fff; }
+    .modal-btn-primary:hover { background: #6d28d9; }
+    .modal-btn-secondary { background: #1e1f35; color: #bbb; }
+    .folder-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; background: #1e1f35; color: #888; }
     .chart-bar { height: 3px; background: #191a2e; border-radius: 2px; overflow: hidden; margin-top: 6px; }
     .chart-fill { height: 100%; border-radius: 2px; }
     .investor-card { background: #101118; border: 1px solid #191a2e; border-radius: 5px; padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: border-color .12s; }
@@ -68,6 +89,111 @@
 
     function Badge({t,c}) { return <span className="badge" style={{background:(c||"#555")+"18",color:c||"#999",border:`1px solid ${(c||"#555")}25`}}>{t}</span>; }
 
+    /* ── Preferences Modal ── */
+    function PrefsModal({prefs, allStages, allCats, onSave, onClose}) {
+      const [sectors, setSectors] = useState(prefs.sectors || []);
+      const [stages, setStages] = useState(prefs.stages || []);
+      const [minAmt, setMinAmt] = useState(prefs.min_amount || "");
+      const [maxAmt, setMaxAmt] = useState(prefs.max_amount || "");
+      const toggleArr = (arr, set, v) => set(prev => prev.includes(v) ? prev.filter(x=>x!==v) : [...prev, v]);
+      return <div className="modal-overlay" onClick={onClose}>
+        <div className="modal" onClick={e=>e.stopPropagation()}>
+          <h3>My Feed Preferences</h3>
+          <div className="modal-section">
+            <div className="modal-section-title">Sectors</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"2px 16px"}}>
+              {allCats.map(c => <label key={c}>
+                <input type="checkbox" checked={sectors.includes(c)} onChange={()=>toggleArr(sectors,setSectors,c)} />
+                <span style={{color:CC[c]||"#999"}}>{c}</span>
+              </label>)}
+            </div>
+          </div>
+          <div className="modal-section">
+            <div className="modal-section-title">Stages</div>
+            <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+              {allStages.map(s => <label key={s}>
+                <input type="checkbox" checked={stages.includes(s)} onChange={()=>toggleArr(stages,setStages,s)} />
+                <span style={{color:SC[s]||"#999"}}>{s}</span>
+              </label>)}
+            </div>
+          </div>
+          <div className="modal-section">
+            <div className="modal-section-title">Amount Range</div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <input type="number" placeholder="Min" value={minAmt} onChange={e=>setMinAmt(e.target.value?Number(e.target.value):"")} />
+              <span style={{color:"#555"}}>to</span>
+              <input type="number" placeholder="Max" value={maxAmt} onChange={e=>setMaxAmt(e.target.value?Number(e.target.value):"")} />
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:20}}>
+            <button className="modal-btn modal-btn-secondary" onClick={onClose}>Cancel</button>
+            <button className="modal-btn modal-btn-primary" onClick={()=>onSave({
+              sectors, stages,
+              ...(minAmt ? {min_amount: minAmt} : {}),
+              ...(maxAmt ? {max_amount: maxAmt} : {}),
+            })}>Save Preferences</button>
+          </div>
+        </div>
+      </div>;
+    }
+
+    /* ── Login/Register Modal ── */
+    function LoginModal({onSuccess, onClose}) {
+      const [mode, setMode] = useState("login");
+      const [username, setUsername] = useState("");
+      const [password, setPassword] = useState("");
+      const [displayName, setDisplayName] = useState("");
+      const [error, setError] = useState("");
+      const [busy, setBusy] = useState(false);
+      const submit = async () => {
+        setError("");
+        setBusy(true);
+        const url = mode === "login" ? "/auth/login" : "/auth/register";
+        const body = mode === "login" ? {username, password} : {username, password, display_name: displayName || username};
+        try {
+          const res = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+          const data = await res.json();
+          if (!res.ok) { setError(data.error || "Something went wrong"); setBusy(false); return; }
+          onSuccess(data.user);
+        } catch(e) { setError("Network error"); setBusy(false); }
+      };
+      return <div className="modal-overlay" onClick={onClose}>
+        <div className="modal" onClick={e=>e.stopPropagation()} style={{minWidth:340,maxWidth:380}}>
+          <h3>{mode === "login" ? "Sign In" : "Create Account"}</h3>
+          {error && <div style={{background:"#ef444420",border:"1px solid #ef444440",borderRadius:4,padding:"6px 10px",marginBottom:12,fontSize:11.5,color:"#f87171"}}>{error}</div>}
+          <div className="modal-section">
+            <div className="modal-section-title">Username</div>
+            <input type="text" value={username} onChange={e=>setUsername(e.target.value)} autoFocus
+              style={{width:"100%",padding:"6px 10px",borderRadius:4,border:"1px solid #1e1f35",background:"#0c0d13",color:"#ddd",fontSize:12.5,outline:"none"}}
+              onKeyDown={e=>e.key==="Enter"&&submit()} />
+          </div>
+          {mode === "register" && <div className="modal-section">
+            <div className="modal-section-title">Display Name <span style={{color:"#444",fontWeight:400}}>(optional)</span></div>
+            <input type="text" value={displayName} onChange={e=>setDisplayName(e.target.value)}
+              style={{width:"100%",padding:"6px 10px",borderRadius:4,border:"1px solid #1e1f35",background:"#0c0d13",color:"#ddd",fontSize:12.5,outline:"none"}}
+              onKeyDown={e=>e.key==="Enter"&&submit()} />
+          </div>}
+          <div className="modal-section">
+            <div className="modal-section-title">Password</div>
+            <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
+              style={{width:"100%",padding:"6px 10px",borderRadius:4,border:"1px solid #1e1f35",background:"#0c0d13",color:"#ddd",fontSize:12.5,outline:"none"}}
+              onKeyDown={e=>e.key==="Enter"&&submit()} />
+          </div>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:20}}>
+            <button className="modal-btn modal-btn-secondary" onClick={onClose}>Cancel</button>
+            <button className="modal-btn modal-btn-primary" onClick={submit} disabled={busy}>
+              {busy ? "..." : mode === "login" ? "Sign In" : "Create Account"}
+            </button>
+          </div>
+          <div style={{marginTop:12,textAlign:"center",fontSize:11.5,color:"#555"}}>
+            {mode === "login"
+              ? <span>No account? <button className="link" onClick={()=>{setMode("register");setError("");}}>Create one</button></span>
+              : <span>Already have one? <button className="link" onClick={()=>{setMode("login");setError("");}}>Sign in</button></span>}
+          </div>
+        </div>
+      </div>;
+    }
+
     /* ── Main App ── */
     function App() {
       const [deals, setDeals] = useState([]);
@@ -90,6 +216,18 @@
       const [expRow, setExpRow] = useState(null);
       const inpRef = useRef(null);
 
+      /* Auth + personalization state */
+      const [user, setUser] = useState(null);
+      const [savedIds, setSavedIds] = useState(new Set());
+      const [savedDeals, setSavedDeals] = useState([]);
+      const [savedFolders, setSavedFolders] = useState([]);
+      const [selFolder, setSelFolder] = useState(null);
+      const [prefs, setPrefs] = useState({});
+      const [showPrefs, setShowPrefs] = useState(false);
+      const [showDropdown, setShowDropdown] = useState(false);
+      const [showLogin, setShowLogin] = useState(false);
+      const [myFeedOn, setMyFeedOn] = useState(false);
+
       /* Fetch data from API */
       useEffect(() => {
         Promise.all([
@@ -98,18 +236,62 @@
           fetch("/api/firms").then(r=>r.json()),
           fetch("/api/investors").then(r=>r.json()),
           fetch("/api/portfolio").then(r=>r.json()),
-        ]).then(([feed, st, fi, inv, port]) => {
+          fetch("/api/me").then(r=>r.json()),
+        ]).then(([feed, st, fi, inv, port, me]) => {
           setDeals(feed.deals || []);
           setStats(st);
           setFirms(fi || []);
           setInvestors(inv || []);
           setPortfolio(port || {companies:[], firms:[], total:0});
+          if (me.logged_in) {
+            setUser(me);
+            fetch("/api/saved/ids").then(r=>r.ok?r.json():null).then(d=>{ if(d) setSavedIds(new Set(d.ids)); });
+            fetch("/api/preferences").then(r=>r.ok?r.json():null).then(d=>{ if(d) setPrefs(d); });
+          }
           setLoading(false);
         }).catch(e => {
           console.error("API fetch failed:", e);
           setLoading(false);
         });
       }, []);
+
+      /* Load saved deals when switching to saved tab or folder changes */
+      useEffect(() => {
+        if (view === "saved" && user) {
+          const url = selFolder ? `/api/saved?folder=${encodeURIComponent(selFolder)}` : "/api/saved";
+          fetch(url).then(r=>r.json()).then(d=>setSavedDeals(d.deals||[]));
+          fetch("/api/saved/folders").then(r=>r.json()).then(d=>setSavedFolders(d.folders||[]));
+        }
+      }, [view, selFolder, user, savedIds]);
+
+      /* Toggle bookmark */
+      const toggleSave = useCallback((dealId, e) => {
+        if (e) e.stopPropagation();
+        if (!user) { setShowLogin(true); return; }
+        const isSaved = savedIds.has(dealId);
+        // Optimistic update
+        setSavedIds(prev => { const next = new Set(prev); isSaved ? next.delete(dealId) : next.add(dealId); return next; });
+        if (isSaved) {
+          fetch(`/api/saved/${dealId}`, {method:"DELETE"});
+        } else {
+          fetch("/api/saved", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({deal_id:dealId})});
+        }
+      }, [user, savedIds]);
+
+      /* Save preferences */
+      const savePrefs = useCallback((newPrefs) => {
+        setPrefs(newPrefs);
+        fetch("/api/preferences", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(newPrefs)});
+        setShowPrefs(false);
+      }, []);
+
+      /* Close dropdown when clicking outside */
+      useEffect(() => {
+        if (!showDropdown) return;
+        const h = () => setShowDropdown(false);
+        setTimeout(() => document.addEventListener("click", h), 0);
+        return () => document.removeEventListener("click", h);
+      }, [showDropdown]);
 
       /* Debounce search input */
       useEffect(() => {
@@ -137,6 +319,13 @@
         if (stgF !== "All") d = d.filter(x => x.stage === stgF);
         if (catF !== "All") d = d.filter(x => x.category === catF);
         if (selFirm) d = d.filter(x => (x.firms||[]).includes(selFirm) || (x.lead_firms||[]).includes(selFirm));
+        /* My Feed — apply user preferences as filters */
+        if (myFeedOn && prefs) {
+          if (prefs.sectors && prefs.sectors.length) d = d.filter(x => prefs.sectors.includes(x.category));
+          if (prefs.stages && prefs.stages.length) d = d.filter(x => prefs.stages.includes(x.stage));
+          if (prefs.min_amount) d = d.filter(x => (x.amount_usd||0) >= prefs.min_amount);
+          if (prefs.max_amount) d = d.filter(x => !x.amount_usd || x.amount_usd <= prefs.max_amount);
+        }
         if (q) {
           const ql = q.toLowerCase();
           d = d.filter(x => (x.company_name||"").toLowerCase().includes(ql) ||
@@ -154,7 +343,7 @@
           return sort.d==="asc"?(va<vb?-1:va>vb?1:0):(va>vb?-1:va<vb?1:0);
         });
         return d;
-      }, [deals, q, stgF, catF, sort, selFirm, earlyOnly]);
+      }, [deals, q, stgF, catF, sort, selFirm, earlyOnly, myFeedOn, prefs]);
 
       /* Firm aggregates from deals */
       const firmAgg = useMemo(() => {
@@ -213,17 +402,38 @@
               {qBuf && <button onClick={()=>{setQBuf("");setQ("");}} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",color:"#555",fontSize:12}}>✕</button>}
             </div>
             <div style={{display:"flex",gap:1,background:"#141520",borderRadius:5,padding:2}}>
-              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"portfolio",l:"◈ Portfolio"}].map(t=>
-                <button key={t.id} onClick={()=>{setView(t.id);if(t.id!=="firms")setSelFirm(null);setSelCat(null);if(t.id!=="portfolio")setSelPortFirm(null);}}
+              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"portfolio",l:"◈ Portfolio"},
+                ...(user ? [{id:"saved",l:"★ Saved"}] : [])
+              ].map(t=>
+                <button key={t.id} onClick={()=>{setView(t.id);if(t.id!=="firms")setSelFirm(null);setSelCat(null);if(t.id!=="portfolio")setSelPortFirm(null);if(t.id==="saved")setSelFolder(null);}}
                   className={`tab ${view===t.id?"on":""}`}>{t.l}</button>
               )}
             </div>
-            <div style={{display:"flex",gap:14,marginLeft:"auto",flexShrink:0}} className="mono">
+            <div style={{display:"flex",gap:14,marginLeft:"auto",flexShrink:0,alignItems:"center"}} className="mono">
               <div style={{textAlign:"right"}}><div style={{fontSize:9,color:"#444",fontWeight:600,letterSpacing:1,textTransform:"uppercase"}}>Showing</div>
                 <div style={{fontSize:16,fontWeight:700,color:"#eee"}}>{rows.length}<span style={{fontSize:11,color:"#555"}}>/{deals.length}</span></div></div>
               <div style={{textAlign:"right"}}><div style={{fontSize:9,color:"#444",fontWeight:600,letterSpacing:1,textTransform:"uppercase"}}>Capital</div>
                 <div style={{fontSize:16,fontWeight:700}} className="green">{$(totCap)}</div></div>
             </div>
+            {/* Auth UI */}
+            {user ? (
+              <div className="user-menu">
+                <div className="user-initial"
+                  onClick={(e)=>{e.stopPropagation();setShowDropdown(!showDropdown);}}>
+                  {(user.name||"U")[0].toUpperCase()}
+                </div>
+                {showDropdown && <div className="user-dropdown">
+                  <div style={{padding:"8px 14px",borderBottom:"1px solid #1e1f35",fontSize:11,color:"#777"}}>{user.name}</div>
+                  <button onClick={()=>{setShowPrefs(true);setShowDropdown(false);}}>Preferences</button>
+                  <button onClick={()=>{setView("saved");setShowDropdown(false);}}>Saved Deals</button>
+                  <button onClick={()=>{fetch("/auth/logout",{method:"POST"}).then(()=>{setUser(null);setSavedIds(new Set());setPrefs({});})}}>Sign Out</button>
+                </div>}
+              </div>
+            ) : (
+              <button onClick={()=>setShowLogin(true)} style={{padding:"5px 12px",borderRadius:4,background:"#1e1f35",color:"#bbb",fontSize:11.5,fontWeight:600,whiteSpace:"nowrap",border:"1px solid #2a2b3d"}}>
+                Sign In
+              </button>
+            )}
           </div>
 
           {/* Filters */}
@@ -242,6 +452,12 @@
               style={{borderColor:earlyOnly?"#22c55e55":"#1a1b2e",background:earlyOnly?"#22c55e14":"transparent",color:earlyOnly?"#22c55e":"#52536b",fontWeight:earlyOnly?700:500}}>
               {earlyOnly ? "Early Stage ≤$50M" : "All Stages"}
             </button>
+            {user && (prefs.sectors?.length || prefs.stages?.length) && (
+              <button onClick={()=>setMyFeedOn(!myFeedOn)} className={`pill ${myFeedOn?"on":""}`}
+                style={{borderColor:myFeedOn?"#a78bfa55":"#1a1b2e",background:myFeedOn?"#a78bfa14":"transparent",color:myFeedOn?"#a78bfa":"#52536b",fontWeight:myFeedOn?700:500}}>
+                My Feed
+              </button>
+            )}
             {activeF.length>0 && <button onClick={clearAll} style={{marginLeft:"auto",padding:"3px 10px",borderRadius:3,border:"1px solid #7c3aed30",background:"#7c3aed0c",color:"#a78bfa",fontSize:10.5,fontWeight:600}}>✕ Clear {activeF.length}</button>}
           </div>
 
@@ -252,6 +468,7 @@
             {view==="grid" && <div style={{flex:1,overflow:"auto"}} className="fu">
               <table style={{fontSize:12.5}}>
                 <thead><tr>
+                  {user && <th style={{width:30,textAlign:"center",cursor:"default",padding:"8px 4px"}}></th>}
                   <SH field="company_name">Company</SH>
                   <SH field="amount_usd" align="right">Amount</SH>
                   <SH field="stage">Stage</SH>
@@ -268,6 +485,11 @@
                     const exp = expRow===d.id;
                     return <React.Fragment key={d.id}>
                       <tr className={i%2===0?"stripe":""} onClick={()=>setExpRow(exp?null:d.id)} style={{cursor:"pointer"}}>
+                        {user && <td style={{textAlign:"center",padding:"8px 4px"}}>
+                          <button className="star-btn" onClick={e=>toggleSave(d.id,e)} title={savedIds.has(d.id)?"Remove bookmark":"Bookmark deal"}>
+                            {savedIds.has(d.id) ? <span style={{color:"#f59e0b"}}>★</span> : <span style={{color:"#33344a"}}>☆</span>}
+                          </button>
+                        </td>}
                         <td><div style={{fontWeight:600,color:"#eef0f4",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:220}}>{d.company_name}</div>
                           <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:240}}>{d.description}</div></td>
                         <td style={{textAlign:"right"}} className="mono green" ><b>{$(d.amount_usd)}</b></td>
@@ -282,7 +504,7 @@
                           {d.confidence_score?`${(d.confidence_score*100).toFixed(0)}%`:"—"}</td>
                         <td style={{textAlign:"center",fontSize:11}} title={SRCS[d.source_type]}>{srcIcon(d.source_type)}</td>
                       </tr>
-                      {exp && <tr><td colSpan={8} className="expand-row"><div className="fu" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:24,fontSize:11.5}}>
+                      {exp && <tr><td colSpan={user?9:8} className="expand-row"><div className="fu" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:24,fontSize:11.5}}>
                         <div><div className="kpi-label" style={{marginBottom:5}}>Overview</div>
                           <div style={{color:"#999",lineHeight:1.6}}>{d.description}</div>
                           {d.founders && <div style={{marginTop:6,color:"#777"}}>Founded by <span style={{color:"#bbb"}}>{d.founders}</span></div>}</div>
@@ -446,6 +668,67 @@
               </div>
             </div>}
 
+            {/* ── SAVED DEALS ── */}
+            {view==="saved" && user && <div style={{flex:1,display:"flex",overflow:"hidden"}} className="fu">
+              <div style={{width:220,borderRight:"1px solid #191a2e",overflow:"auto",flexShrink:0}}>
+                <div style={{padding:"12px 16px",borderBottom:"1px solid #191a2e"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#555",textTransform:"uppercase",letterSpacing:1}}>Folders</div>
+                </div>
+                <div onClick={()=>setSelFolder(null)} className={`sidebar-item ${!selFolder?"on":""}`}
+                  style={{borderLeft:`3px solid ${!selFolder?"#a78bfa":"transparent"}`,fontSize:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between"}}>
+                    <span style={{fontWeight:600,color:!selFolder?"#c4b5fd":"#ddd"}}>All Saved</span>
+                    <span className="mono" style={{color:"#555"}}>{savedIds.size}</span>
+                  </div>
+                </div>
+                {savedFolders.map(f =>
+                  <div key={f.folder} onClick={()=>setSelFolder(f.folder)} className={`sidebar-item ${selFolder===f.folder?"on":""}`}
+                    style={{borderLeft:`3px solid ${selFolder===f.folder?"#a78bfa":"transparent"}`,fontSize:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between"}}>
+                      <span style={{fontWeight:600,color:selFolder===f.folder?"#c4b5fd":"#ddd"}}>{f.folder}</span>
+                      <span className="mono" style={{color:"#555"}}>{f.count}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div style={{flex:1,overflow:"auto"}}>
+                <table style={{fontSize:12.5}}>
+                  <thead><tr>
+                    <th style={{cursor:"default",width:30,textAlign:"center",padding:"8px 4px"}}></th>
+                    <th style={{cursor:"default"}}>Company</th>
+                    <th style={{cursor:"default",textAlign:"right"}}>Amount</th>
+                    <th style={{cursor:"default"}}>Stage</th>
+                    <th style={{cursor:"default"}}>Sector</th>
+                    <th style={{cursor:"default"}}>Date</th>
+                    <th style={{cursor:"default"}}>Folder</th>
+                    <th style={{cursor:"default"}}>Notes</th>
+                  </tr></thead>
+                  <tbody>
+                    {savedDeals.map((d,i) =>
+                      <tr key={d.id||i} className={i%2===0?"stripe":""}>
+                        <td style={{textAlign:"center",padding:"8px 4px"}}>
+                          <button className="star-btn" onClick={()=>toggleSave(d.deal_id)} title="Remove bookmark">
+                            <span style={{color:"#f59e0b"}}>★</span>
+                          </button>
+                        </td>
+                        <td><div style={{fontWeight:600,color:"#eef0f4"}}>{d.company_name}</div>
+                          <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,maxWidth:240,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company_description}</div></td>
+                        <td style={{textAlign:"right"}} className="mono green"><b>{$(d.amount_usd)}</b></td>
+                        <td><Badge t={d.stage} c={SC[d.stage]} /></td>
+                        <td style={{color:CC[d.category],fontSize:11}}>{d.category}</td>
+                        <td className="mono muted" style={{fontSize:11}}>{(d.date_announced||"").slice(5)}</td>
+                        <td><span className="folder-badge">{d.folder}</span></td>
+                        <td style={{color:"#666",fontSize:11,maxWidth:150,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.notes||"—"}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+                {savedDeals.length===0 && <div className="empty" style={{padding:60}}>
+                  <div><div style={{fontSize:32,marginBottom:6}}>★</div><div style={{fontSize:13}}>No saved deals yet — click ☆ on any deal to bookmark it</div></div>
+                </div>}
+              </div>
+            </div>}
+
             {/* ── PORTFOLIO ── */}
             {view==="portfolio" && <div style={{flex:1,display:"flex",overflow:"hidden"}} className="fu">
               <div style={{width:340,borderRight:"1px solid #191a2e",overflow:"auto",flexShrink:0}}>
@@ -517,6 +800,15 @@
               </div>
             </div>}
           </div>
+
+          {/* Preferences Modal */}
+          {showPrefs && user && <PrefsModal prefs={prefs} allStages={allStages} allCats={allCats} onSave={savePrefs} onClose={()=>setShowPrefs(false)} />}
+          {showLogin && !user && <LoginModal onClose={()=>setShowLogin(false)} onSuccess={(u)=>{
+            setUser({logged_in:true,...u});
+            setShowLogin(false);
+            fetch("/api/saved/ids").then(r=>r.ok?r.json():null).then(d=>{ if(d) setSavedIds(new Set(d.ids)); });
+            fetch("/api/preferences").then(r=>r.ok?r.json():null).then(d=>{ if(d) setPrefs(d); });
+          }} />}
 
           {/* Footer */}
           <div className="mono" style={{padding:"6px 20px",borderTop:"1px solid #191a2e",display:"flex",justifyContent:"space-between",background:"#0c0d13",fontSize:10,color:"#33344a"}}>

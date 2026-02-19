@@ -8,21 +8,195 @@ import sys
 import json
 import threading
 import logging
+from functools import wraps
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, session
 from flask_cors import CORS
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from database import get_connection, init_db
+from database import (
+    get_connection, init_db, create_user, get_user_by_username,
+    get_user_preferences, set_user_preferences,
+    save_deal, unsave_deal, update_saved_deal,
+    get_saved_deals, get_saved_deal_ids, get_saved_folders,
+)
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 CORS(app)
+
+# ── Auth Configuration ──
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
+app.config.update(
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=not os.environ.get("FLASK_DEBUG"),
+)
+
+
+def login_required(f):
+    """Decorator — returns 401 if no valid session. Only for new endpoints."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if "user_id" not in session:
+            return jsonify({"error": "Login required"}), 401
+        return f(*args, **kwargs)
+    return wrapper
 
 
 @app.route("/")
 def serve_dashboard():
     return send_from_directory(os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"), "dashboard.html")
 
+
+# ── Auth Routes ──────────────────────────────────────────────
+
+@app.route("/auth/register", methods=["POST"])
+def auth_register():
+    data = request.get_json(force=True)
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    display_name = (data.get("display_name") or "").strip() or username
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+    if len(username) < 3:
+        return jsonify({"error": "Username must be at least 3 characters"}), 400
+    if len(password) < 4:
+        return jsonify({"error": "Password must be at least 4 characters"}), 400
+    conn = get_connection()
+    existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if existing:
+        conn.close()
+        return jsonify({"error": "Username already taken"}), 409
+    user = create_user(conn, username, generate_password_hash(password), display_name)
+    conn.close()
+    session["user_id"] = user["id"]
+    session["user_name"] = user["display_name"]
+    return jsonify({"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user["display_name"]}})
+
+
+@app.route("/auth/login", methods=["POST"])
+def auth_login():
+    data = request.get_json(force=True)
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+    conn = get_connection()
+    user = get_user_by_username(conn, username)
+    conn.close()
+    if not user or not check_password_hash(user["password_hash"], password):
+        return jsonify({"error": "Invalid username or password"}), 401
+    session["user_id"] = user["id"]
+    session["user_name"] = user["display_name"]
+    return jsonify({"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user["display_name"]}})
+
+
+@app.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/me")
+def api_me():
+    if "user_id" in session:
+        return jsonify({
+            "logged_in": True,
+            "id": session["user_id"],
+            "name": session.get("user_name"),
+        })
+    return jsonify({"logged_in": False})
+
+
+# ── Preferences Endpoints ────────────────────────────────────
+
+@app.route("/api/preferences", methods=["GET"])
+@login_required
+def api_get_preferences():
+    conn = get_connection()
+    prefs = get_user_preferences(conn, session["user_id"])
+    conn.close()
+    return jsonify(prefs)
+
+
+@app.route("/api/preferences", methods=["PUT"])
+@login_required
+def api_set_preferences():
+    data = request.get_json(force=True)
+    conn = get_connection()
+    set_user_preferences(conn, session["user_id"], data)
+    conn.close()
+    return jsonify({"ok": True})
+
+
+# ── Saved Deals Endpoints ────────────────────────────────────
+
+@app.route("/api/saved", methods=["GET"])
+@login_required
+def api_get_saved():
+    folder = request.args.get("folder")
+    conn = get_connection()
+    deals = get_saved_deals(conn, session["user_id"], folder)
+    conn.close()
+    return jsonify({"deals": deals})
+
+
+@app.route("/api/saved", methods=["POST"])
+@login_required
+def api_save_deal():
+    data = request.get_json(force=True)
+    deal_id = data.get("deal_id")
+    if not deal_id:
+        return jsonify({"error": "deal_id required"}), 400
+    conn = get_connection()
+    row_id = save_deal(conn, session["user_id"], deal_id,
+                       folder=data.get("folder", "Default"),
+                       notes=data.get("notes"))
+    conn.close()
+    return jsonify({"ok": True, "id": row_id})
+
+
+@app.route("/api/saved/<int:deal_id>", methods=["PUT"])
+@login_required
+def api_update_saved(deal_id):
+    data = request.get_json(force=True)
+    conn = get_connection()
+    update_saved_deal(conn, session["user_id"], deal_id,
+                      folder=data.get("folder"),
+                      notes=data.get("notes"))
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/saved/<int:deal_id>", methods=["DELETE"])
+@login_required
+def api_unsave_deal(deal_id):
+    conn = get_connection()
+    unsave_deal(conn, session["user_id"], deal_id)
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/saved/folders", methods=["GET"])
+@login_required
+def api_saved_folders():
+    conn = get_connection()
+    folders = get_saved_folders(conn, session["user_id"])
+    conn.close()
+    return jsonify({"folders": folders})
+
+
+@app.route("/api/saved/ids", methods=["GET"])
+@login_required
+def api_saved_ids():
+    conn = get_connection()
+    ids = get_saved_deal_ids(conn, session["user_id"])
+    conn.close()
+    return jsonify({"ids": ids})
+
+
+# ── Existing Public Endpoints ────────────────────────────────
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():

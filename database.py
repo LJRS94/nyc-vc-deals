@@ -203,6 +203,40 @@ def init_db(db_path: str = DB_PATH):
     );
     CREATE INDEX IF NOT EXISTS idx_portfolio_firm ON portfolio_companies(firm_id);
 
+    -- Users (username/password)
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        display_name TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_login_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- User preferences (key-value: sectors, stages, min_amount, max_amount)
+    CREATE TABLE IF NOT EXISTS user_preferences (
+        user_id INTEGER NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, key),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- Saved/bookmarked deals
+    CREATE TABLE IF NOT EXISTS saved_deals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        deal_id INTEGER NOT NULL,
+        folder TEXT DEFAULT 'Default',
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE,
+        UNIQUE(user_id, deal_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_saved_deals_user ON saved_deals(user_id);
+
     -- Seed default categories
     INSERT OR IGNORE INTO categories (name) VALUES
         ('Fintech'),
@@ -359,6 +393,146 @@ def upsert_portfolio_company(conn, firm_id: int, company_name: str, **kwargs) ->
     if not _is_batch(conn):
         conn.commit()
     return cur.lastrowid
+
+
+def create_user(conn, username: str, password_hash: str,
+                display_name: str = None) -> dict:
+    """Create a new user, return user dict."""
+    cur = conn.execute(
+        "INSERT INTO users (username, password_hash, display_name) VALUES (?, ?, ?)",
+        (username, password_hash, display_name or username)
+    )
+    if not _is_batch(conn):
+        conn.commit()
+    return dict(conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+
+def get_user_by_username(conn, username: str) -> Optional[dict]:
+    """Look up a user by username. Returns dict or None."""
+    row = conn.execute(
+        "SELECT * FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE users SET last_login_at = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), row["id"])
+        )
+        if not _is_batch(conn):
+            conn.commit()
+        return dict(row)
+    return None
+
+
+def get_user_preferences(conn, user_id: int) -> dict:
+    """Get all preferences for a user as a dict of key->value (JSON-decoded)."""
+    rows = conn.execute(
+        "SELECT key, value FROM user_preferences WHERE user_id = ?", (user_id,)
+    ).fetchall()
+    import json as _json
+    result = {}
+    for row in rows:
+        try:
+            result[row["key"]] = _json.loads(row["value"])
+        except (TypeError, ValueError):
+            result[row["key"]] = row["value"]
+    return result
+
+
+def set_user_preferences(conn, user_id: int, prefs: dict):
+    """Set multiple preferences for a user (upsert each key)."""
+    import json as _json
+    now = datetime.utcnow().isoformat()
+    for key, value in prefs.items():
+        encoded = _json.dumps(value) if not isinstance(value, str) else value
+        conn.execute(
+            "INSERT INTO user_preferences (user_id, key, value, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            (user_id, key, encoded, now)
+        )
+    if not _is_batch(conn):
+        conn.commit()
+
+
+def save_deal(conn, user_id: int, deal_id: int, folder: str = "Default",
+              notes: str = None) -> int:
+    """Bookmark a deal for a user. Returns saved_deals row id."""
+    cur = conn.execute(
+        "INSERT INTO saved_deals (user_id, deal_id, folder, notes) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, deal_id) DO UPDATE SET folder = excluded.folder, notes = excluded.notes",
+        (user_id, deal_id, folder, notes)
+    )
+    if not _is_batch(conn):
+        conn.commit()
+    return cur.lastrowid
+
+
+def unsave_deal(conn, user_id: int, deal_id: int):
+    """Remove a bookmarked deal."""
+    conn.execute(
+        "DELETE FROM saved_deals WHERE user_id = ? AND deal_id = ?",
+        (user_id, deal_id)
+    )
+    if not _is_batch(conn):
+        conn.commit()
+
+
+def update_saved_deal(conn, user_id: int, deal_id: int, folder: str = None,
+                      notes: str = None):
+    """Update folder/notes on a saved deal."""
+    sets = []
+    params = []
+    if folder is not None:
+        sets.append("folder = ?")
+        params.append(folder)
+    if notes is not None:
+        sets.append("notes = ?")
+        params.append(notes)
+    if not sets:
+        return
+    params.extend([user_id, deal_id])
+    conn.execute(
+        f"UPDATE saved_deals SET {', '.join(sets)} WHERE user_id = ? AND deal_id = ?",
+        params
+    )
+    if not _is_batch(conn):
+        conn.commit()
+
+
+def get_saved_deals(conn, user_id: int, folder: str = None) -> list:
+    """Get saved deals for a user, optionally filtered by folder."""
+    sql = """
+        SELECT sd.*, d.company_name, d.company_description, d.stage,
+               d.amount_usd, d.date_announced, d.source_type, d.source_url,
+               c.name as category
+        FROM saved_deals sd
+        JOIN deals d ON sd.deal_id = d.id
+        LEFT JOIN categories c ON d.category_id = c.id
+        WHERE sd.user_id = ?
+    """
+    params = [user_id]
+    if folder:
+        sql += " AND sd.folder = ?"
+        params.append(folder)
+    sql += " ORDER BY sd.created_at DESC"
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def get_saved_deal_ids(conn, user_id: int) -> list:
+    """Get just the deal IDs saved by a user (for rendering stars)."""
+    rows = conn.execute(
+        "SELECT deal_id FROM saved_deals WHERE user_id = ?", (user_id,)
+    ).fetchall()
+    return [r["deal_id"] for r in rows]
+
+
+def get_saved_folders(conn, user_id: int) -> list:
+    """Get folders with counts for a user."""
+    rows = conn.execute(
+        "SELECT folder, COUNT(*) as count FROM saved_deals WHERE user_id = ? GROUP BY folder ORDER BY folder",
+        (user_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_category_id(conn, name: str) -> Optional[int]:
