@@ -1,0 +1,11 @@
+.http_cache/
+__pycache__/
+*.pyc
+scraper.log
+.google_batch_state.json
+*.egg-info/
+.env
+~$*
+TholthV*
+deals.csv
+deals.json

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NYC VC Deal Intelligence</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0b0f; color: #c8cad0; font-family: 'Instrument Sans', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-thumb { background: #2a2b3d; border-radius: 3px; }
+    input::placeholder { color: #33344a; }
+    button { font-family: inherit; border: none; cursor: pointer; background: transparent; }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .fu { animation: fadeUp .18s ease-out; }
+    table { width: 100%; border-collapse: collapse; }
+    th { position: sticky; top: 0; z-index: 3; background: #101118; cursor: pointer; user-select: none;
+         padding: 8px 10px; font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+         letter-spacing: 1.2px; color: #52536b; white-space: nowrap; border-bottom: 2px solid #191a2e; }
+    th.active { color: #c4b5fd; border-bottom-color: #7c3aed; }
+    td { padding: 8px 10px; border-bottom: 1px solid #13141f; }
+    tr.stripe { background: #0c0d13; }
+    tr:hover td { background: #13141f !important; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600; white-space: nowrap; }
+    .mono { font-family: 'IBM Plex Mono', monospace; }
+    .green { color: #34d399; }
+    .purple { color: #a78bfa; }
+    .muted { color: #52536b; }
+    .link { color: #a78bfa; font-weight: 600; cursor: pointer; }
+    .link:hover { text-decoration: underline; }
+    .header { display: flex; align-items: center; gap: 16px; padding: 10px 20px; border-bottom: 1px solid #191a2e; background: #0c0d13; }
+    .filters { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 20px; border-bottom: 1px solid #191a2e; background: #0c0d13; }
+    .pill { padding: 2px 9px; border-radius: 3px; font-size: 10.5px; font-weight: 500; border: 1px solid #1a1b2e; }
+    .pill.on { font-weight: 700; }
+    .tab { padding: 5px 14px; border-radius: 4px; font-size: 11.5px; font-weight: 600; }
+    .tab.on { background: #1e1f35; color: #b4a7f5; }
+    .tab:not(.on) { color: #52536b; }
+    .kpi { background: #101118; border: 1px solid #191a2e; border-radius: 6px; padding: 10px 16px; min-width: 90px; }
+    .kpi-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #444; }
+    .kpi-val { font-size: 20px; font-weight: 700; margin-top: 2px; }
+    .expand-row td { padding: 10px 10px 14px 28px; background: #111220; border-bottom: 1px solid #1e1f30; }
+    .sidebar-item { padding: 12px 16px; border-bottom: 1px solid #13141f; cursor: pointer; transition: background .12s; }
+    .sidebar-item:hover { background: #0e0f18; }
+    .sidebar-item.on { background: #141520; }
+    .empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #2a2b3d; text-align: center; }
+    .loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #52536b; font-size: 14px; }
+    .chart-bar { height: 3px; background: #191a2e; border-radius: 2px; overflow: hidden; margin-top: 6px; }
+    .chart-fill { height: 100%; border-radius: 2px; }
+    .investor-card { background: #101118; border: 1px solid #191a2e; border-radius: 5px; padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: border-color .12s; }
+    .investor-card:hover { border-color: #7c3aed30; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+    /* ── Helpers ── */
+    const $=v=>{if(!v&&v!==0)return"—";if(v>=1e9)return`$${(v/1e9).toFixed(1)}B`;if(v>=1e6)return`$${(v/1e6).toFixed(1)}M`;if(v>=1e3)return`$${(v/1e3).toFixed(0)}K`;return`$${v}`;};
+    const SC={"Pre-Seed":"#f97316",Seed:"#22c55e","Series A":"#6366f1","Series B":"#ec4899","Series C+":"#a855f7",Unknown:"#6b7280"};
+    const CC={"AI / Machine Learning":"#818cf8",Fintech:"#34d399","Health & Biotech":"#f472b6",Cybersecurity:"#fb923c","Web3 / Crypto":"#a78bfa","Real Estate / Proptech":"#2dd4bf","Insurance / Insurtech":"#f59e0b","HR / Future of Work":"#38bdf8","Developer Tools":"#4ade80","Media & Entertainment":"#e879f9","SaaS / Enterprise":"#60a5fa","Consumer / D2C":"#fb7185","Climate / Cleantech":"#84cc16","Marketplace":"#fb923c","Other":"#6b7280"};
+    const SRCS = {alleywatch:"🗽 AlleyWatch",sec_filing:"📋 SEC",news_article:"📰 News",de_filing:"🏛 Delaware",google_news:"🔍 Google",other:"📄 Other"};
+    const srcIcon = s => (SRCS[s]||"📄").split(" ")[0];
+
+    function Badge({t,c}) { return <span className="badge" style={{background:(c||"#555")+"18",color:c||"#999",border:`1px solid ${(c||"#555")}25`}}>{t}</span>; }
+
+    /* ── Main App ── */
+    function App() {
+      const [deals, setDeals] = useState([]);
+      const [stats, setStats] = useState(null);
+      const [firms, setFirms] = useState([]);
+      const [investors, setInvestors] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [view, setView] = useState("grid");
+      const [q, setQ] = useState("");
+      const [stgF, setStgF] = useState("All");
+      const [catF, setCatF] = useState("All");
+      const [sort, setSort] = useState({f:"amount_usd",d:"desc"});
+      const [fSort, setFSort] = useState({f:"total_invested",d:"desc"});
+      const [selFirm, setSelFirm] = useState(null);
+      const [selCat, setSelCat] = useState(null);
+      const [expRow, setExpRow] = useState(null);
+      const inpRef = useRef(null);
+
+      /* Fetch data from API */
+      useEffect(() => {
+        Promise.all([
+          fetch("/api/feed?days=60").then(r=>r.json()),
+          fetch("/api/stats").then(r=>r.json()),
+          fetch("/api/firms").then(r=>r.json()),
+          fetch("/api/investors").then(r=>r.json()),
+        ]).then(([feed, st, fi, inv]) => {
+          setDeals(feed.deals || []);
+          setStats(st);
+          setFirms(fi || []);
+          setInvestors(inv || []);
+          setLoading(false);
+        }).catch(e => {
+          console.error("API fetch failed:", e);
+          setLoading(false);
+        });
+      }, []);
+
+      /* / key focuses search */
+      useEffect(() => {
+        const h = e => { if (e.key === "/" && document.activeElement?.tagName !== "INPUT") { e.preventDefault(); inpRef.current?.focus(); }};
+        window.addEventListener("keydown", h);
+        return () => window.removeEventListener("keydown", h);
+      }, []);
+
+      const doSort = useCallback(f => setSort(p => ({f, d: p.f===f && p.d==="desc" ? "asc" : "desc"})), []);
+
+      /* Derived data */
+      const allStages = useMemo(() => [...new Set(deals.map(d=>d.stage))].filter(Boolean).sort(), [deals]);
+      const allCats = useMemo(() => [...new Set(deals.map(d=>d.category))].filter(Boolean).sort(), [deals]);
+
+      /* Filtered + sorted deals */
+      const rows = useMemo(() => {
+        let d = [...deals];
+        if (stgF !== "All") d = d.filter(x => x.stage === stgF);
+        if (catF !== "All") d = d.filter(x => x.category === catF);
+        if (selFirm) d = d.filter(x => (x.firms||[]).includes(selFirm) || (x.lead_firms||[]).includes(selFirm));
+        if (q) {
+          const ql = q.toLowerCase();
+          d = d.filter(x => (x.company_name||"").toLowerCase().includes(ql) ||
+            (x.category||"").toLowerCase().includes(ql) ||
+            (x.description||"").toLowerCase().includes(ql) ||
+            (x.founders||"").toLowerCase().includes(ql) ||
+            (x.firms||[]).some(f => f.toLowerCase().includes(ql)) ||
+            (x.stage||"").toLowerCase().includes(ql));
+        }
+        d.sort((a,b) => {
+          let va=a[sort.f], vb=b[sort.f];
+          if (va==null) va = sort.d==="desc"?-Infinity:Infinity;
+          if (vb==null) vb = sort.d==="desc"?-Infinity:Infinity;
+          if (typeof va==="string") { va=va.toLowerCase(); vb=(vb||"").toLowerCase(); }
+          return sort.d==="asc"?(va<vb?-1:va>vb?1:0):(va>vb?-1:va<vb?1:0);
+        });
+        return d;
+      }, [deals, q, stgF, catF, sort, selFirm]);
+
+      /* Firm aggregates from deals */
+      const firmAgg = useMemo(() => {
+        const m = {};
+        deals.forEach(d => {
+          (d.firms||[]).forEach(fn => {
+            if (!m[fn]) m[fn] = {name:fn,cap:0,cnt:0,leads:0,cats:new Set()};
+            m[fn].cap += d.amount_usd||0;
+            m[fn].cnt++;
+            if ((d.lead_firms||[]).includes(fn)) m[fn].leads++;
+            if (d.category) m[fn].cats.add(d.category);
+          });
+        });
+        return Object.values(m).map(f=>({...f,cats:[...f.cats]})).sort((a,b)=>b.cap-a.cap);
+      }, [deals]);
+
+      /* Category aggregates */
+      const catAgg = useMemo(() => {
+        const m = {};
+        deals.forEach(d => {
+          const c = d.category || "Other";
+          if (!m[c]) m[c] = {cat:c,cap:0,cnt:0,stages:{},firms:new Set()};
+          m[c].cap += d.amount_usd||0;
+          m[c].cnt++;
+          m[c].stages[d.stage] = (m[c].stages[d.stage]||0)+1;
+          (d.firms||[]).forEach(f => m[c].firms.add(f));
+        });
+        return Object.values(m).map(c=>({...c,avg:c.cap/c.cnt,firms:[...c.firms]})).sort((a,b)=>b.cap-a.cap);
+      }, [deals]);
+
+      const totCap = rows.reduce((s,d) => s+(d.amount_usd||0), 0);
+      const activeF = [stgF!=="All"&&stgF, catF!=="All"&&catF, selFirm, q].filter(Boolean);
+      const clearAll = () => { setStgF("All");setCatF("All");setSelFirm(null);setSelCat(null);setQ(""); };
+      const goFirm = n => { setSelFirm(n); setView("firms"); };
+
+      function SH({children, field, align}) {
+        const on = sort.f===field;
+        return <th className={on?"active":""} onClick={field?()=>doSort(field):undefined}
+          style={{textAlign:align||"left"}}>{children}{on?(sort.d==="asc"?" ↑":" ↓"):""}</th>;
+      }
+
+      if (loading) return <div className="loading"><div>Loading deal data…</div></div>;
+
+      return (
+        <div style={{display:"flex",flexDirection:"column",minHeight:"100vh"}}>
+          {/* Header */}
+          <div className="header">
+            <div className="mono" style={{fontWeight:700,fontSize:15,color:"#eee",letterSpacing:-.5,flexShrink:0}}>
+              NYC·VC <span style={{fontWeight:400,fontSize:11,color:"#444",marginLeft:6}}>Live Dashboard</span>
+            </div>
+            <div style={{flex:1,maxWidth:400,position:"relative"}}>
+              <input ref={inpRef} value={q} onChange={e=>setQ(e.target.value)}
+                placeholder='Search everything… ( / )'
+                style={{width:"100%",padding:"6px 10px 6px 28px",borderRadius:4,border:"1px solid #191a2e",background:"#101118",color:"#ddd",fontSize:12.5,outline:"none"}} />
+              <span style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",color:"#33344a",fontSize:13}}>⌕</span>
+              {q && <button onClick={()=>setQ("")} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",color:"#555",fontSize:12}}>✕</button>}
+            </div>
+            <div style={{display:"flex",gap:1,background:"#141520",borderRadius:5,padding:2}}>
+              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"}].map(t=>
+                <button key={t.id} onClick={()=>{setView(t.id);if(t.id!=="firms")setSelFirm(null);setSelCat(null);}}
+                  className={`tab ${view===t.id?"on":""}`}>{t.l}</button>
+              )}
+            </div>
+            <div style={{display:"flex",gap:14,marginLeft:"auto",flexShrink:0}} className="mono">
+              <div style={{textAlign:"right"}}><div style={{fontSize:9,color:"#444",fontWeight:600,letterSpacing:1,textTransform:"uppercase"}}>Showing</div>
+                <div style={{fontSize:16,fontWeight:700,color:"#eee"}}>{rows.length}<span style={{fontSize:11,color:"#555"}}>/{deals.length}</span></div></div>
+              <div style={{textAlign:"right"}}><div style={{fontSize:9,color:"#444",fontWeight:600,letterSpacing:1,textTransform:"uppercase"}}>Capital</div>
+                <div style={{fontSize:16,fontWeight:700}} className="green">{$(totCap)}</div></div>
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div className="filters">
+            <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Stage</span>
+            {["All",...allStages].map(v=>{const on=stgF===v;const c=SC[v]||"#7c3aed";
+              return <button key={v} onClick={()=>setStgF(v)} className={`pill ${on?"on":""}`}
+                style={{borderColor:on?c+"55":"#1a1b2e",background:on?c+"14":"transparent",color:on?c:"#52536b"}}>{v}</button>;})}
+            <div style={{width:1,height:16,background:"#1a1b2e"}} />
+            <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Sector</span>
+            {["All",...allCats].map(v=>{const on=catF===v;const c=CC[v]||"#7c3aed";
+              return <button key={v} onClick={()=>setCatF(v)} className={`pill ${on?"on":""}`}
+                style={{borderColor:on?c+"55":"#1a1b2e",background:on?c+"14":"transparent",color:on?c:"#52536b"}}>{(v||"").split("/")[0].trim()}</button>;})}
+            {activeF.length>0 && <button onClick={clearAll} style={{marginLeft:"auto",padding:"3px 10px",borderRadius:3,border:"1px solid #7c3aed30",background:"#7c3aed0c",color:"#a78bfa",fontSize:10.5,fontWeight:600}}>✕ Clear {activeF.length}</button>}
+          </div>
+
+          {/* Body */}
+          <div style={{flex:1,overflow:"hidden",display:"flex"}}>
+
+            {/* ── DEAL GRID ── */}
+            {view==="grid" && <div style={{flex:1,overflow:"auto"}} className="fu">
+              <table style={{fontSize:12.5}}>
+                <thead><tr>
+                  <SH field="company_name">Company</SH>
+                  <SH field="amount_usd" align="right">Amount</SH>
+                  <SH field="stage">Stage</SH>
+                  <SH field="category">Sector</SH>
+                  <SH field="date_announced">Date</SH>
+                  <SH field="firms">Investors</SH>
+                  <SH field="confidence_score" align="right">Conf</SH>
+                  <SH>Src</SH>
+                </tr></thead>
+                <tbody>
+                  {rows.map((d,i) => {
+                    const lead = (d.lead_firms||[])[0];
+                    const others = (d.firms||[]).filter(f=>f!==lead);
+                    const exp = expRow===d.id;
+                    return <React.Fragment key={d.id}>
+                      <tr className={i%2===0?"stripe":""} onClick={()=>setExpRow(exp?null:d.id)} style={{cursor:"pointer"}}>
+                        <td><div style={{fontWeight:600,color:"#eef0f4",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:220}}>{d.company_name}</div>
+                          <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:240}}>{d.description}</div></td>
+                        <td style={{textAlign:"right"}} className="mono green" ><b>{$(d.amount_usd)}</b></td>
+                        <td><Badge t={d.stage} c={SC[d.stage]} /></td>
+                        <td><button className="link" onClick={e=>{e.stopPropagation();setCatF(d.category)}} style={{color:CC[d.category],fontSize:11.5,fontWeight:500}}>{d.category}</button></td>
+                        <td className="mono muted" style={{fontSize:11}}>{(d.date_announced||"").slice(5)}</td>
+                        <td>{lead && <button className="link" onClick={e=>{e.stopPropagation();goFirm(lead)}} style={{fontSize:11.5}}>★ {lead}</button>}
+                          {others.length>0 && <span style={{fontSize:10,color:"#4a4b60",marginLeft:4}}>+{others.length}</span>}
+                          {!(d.firms||[]).length && <span className="muted">—</span>}</td>
+                        <td style={{textAlign:"right",fontSize:10.5}} className="mono"
+                          style={{color:(d.confidence_score||0)>=.9?"#22c55e":(d.confidence_score||0)>=.7?"#f59e0b":"#ef4444",textAlign:"right",fontSize:10.5,fontFamily:"'IBM Plex Mono',monospace"}}>
+                          {d.confidence_score?`${(d.confidence_score*100).toFixed(0)}%`:"—"}</td>
+                        <td style={{textAlign:"center",fontSize:11}} title={SRCS[d.source_type]}>{srcIcon(d.source_type)}</td>
+                      </tr>
+                      {exp && <tr><td colSpan={8} className="expand-row"><div className="fu" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:24,fontSize:11.5}}>
+                        <div><div className="kpi-label" style={{marginBottom:5}}>Overview</div>
+                          <div style={{color:"#999",lineHeight:1.6}}>{d.description}</div>
+                          {d.founders && <div style={{marginTop:6,color:"#777"}}>Founded by <span style={{color:"#bbb"}}>{d.founders}</span></div>}</div>
+                        <div><div className="kpi-label" style={{marginBottom:5}}>Investors</div>
+                          {(d.investors||d.firms||[]).map((f,j)=><div key={j}><button className="link" onClick={()=>goFirm(typeof f==="string"?f:f.name)} style={{fontSize:11.5,fontWeight:(d.lead_firms||[]).includes(typeof f==="string"?f:f.name)?600:400,color:(d.lead_firms||[]).includes(typeof f==="string"?f:f.name)?"#a78bfa":"#777"}}>{(d.lead_firms||[]).includes(typeof f==="string"?f:f.name)?"★ ":"  "}{typeof f==="string"?f:f.name}</button></div>)}
+                          {!(d.firms||[]).length && <span className="muted">Undisclosed</span>}</div>
+                        <div><div className="kpi-label" style={{marginBottom:5}}>Financials</div>
+                          <div style={{display:"grid",gridTemplateColumns:"80px 1fr",gap:"3px 10px"}}>
+                            <span className="muted">Raised</span><span className="mono green">{d.amount_usd?`$${(d.amount_usd/1e6).toFixed(2)}M`:"—"}</span>
+                            {d.total_raised && <><span className="muted">Lifetime</span><span className="mono" style={{color:"#888"}}>{$(d.total_raised)}</span></>}
+                            <span className="muted">Source</span><span>{SRCS[d.source_type]||d.source_type}</span>
+                          </div></div>
+                      </div></td></tr>}
+                    </React.Fragment>;
+                  })}
+                </tbody>
+              </table>
+              {rows.length===0 && <div className="empty" style={{padding:60}}><div>No deals match — <button className="link" onClick={clearAll}>clear filters</button></div></div>}
+            </div>}
+
+            {/* ── FIRMS ── */}
+            {view==="firms" && <div style={{flex:1,display:"flex",overflow:"hidden"}} className="fu">
+              <div style={{width:400,borderRight:"1px solid #191a2e",overflow:"auto",flexShrink:0}}>
+                <table style={{fontSize:11.5}}>
+                  <thead><tr>
+                    <th onClick={()=>setFSort(p=>({f:"name",d:p.f==="name"&&p.d==="desc"?"asc":"desc"}))} className={fSort.f==="name"?"active":""}>Firm</th>
+                    <th onClick={()=>setFSort(p=>({f:"cnt",d:p.f==="cnt"&&p.d==="desc"?"asc":"desc"}))} className={fSort.f==="cnt"?"active":""} style={{textAlign:"right",width:50}}>Deals</th>
+                    <th onClick={()=>setFSort(p=>({f:"cap",d:p.f==="cap"&&p.d==="desc"?"asc":"desc"}))} className={fSort.f==="cap"?"active":""} style={{textAlign:"right",width:80}}>Capital</th>
+                    <th onClick={()=>setFSort(p=>({f:"leads",d:p.f==="leads"&&p.d==="desc"?"asc":"desc"}))} className={fSort.f==="leads"?"active":""} style={{textAlign:"right",width:50}}>Leads</th>
+                  </tr></thead>
+                  <tbody>
+                    {firmAgg.filter(f=>!q||f.name.toLowerCase().includes(q.toLowerCase())).sort((a,b)=>fSort.d==="asc"?(a[fSort.f]<b[fSort.f]?-1:1):(a[fSort.f]>b[fSort.f]?-1:1)).map((f,i) =>
+                      <tr key={f.name} onClick={()=>setSelFirm(selFirm===f.name?null:f.name)}
+                        className={i%2===0?"stripe":""} style={{cursor:"pointer",background:selFirm===f.name?"#181930":undefined}}>
+                        <td><div style={{fontWeight:600,color:selFirm===f.name?"#c4b5fd":"#ddd"}}>{f.name}</div>
+                          <div style={{display:"flex",gap:2,marginTop:3,flexWrap:"wrap"}}>{f.cats.slice(0,3).map(c=><Badge key={c} t={c.split("/")[0].trim()} c={CC[c]} />)}</div></td>
+                        <td className="mono" style={{textAlign:"right",fontWeight:700,color:"#ddd"}}>{f.cnt}</td>
+                        <td className="mono green" style={{textAlign:"right",fontWeight:700}}>{$(f.cap)}</td>
+                        <td className="mono purple" style={{textAlign:"right"}}>{f.leads}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{flex:1,overflow:"auto",padding:20}}>
+                {selFirm ? (() => {
+                  const f = firmAgg.find(x=>x.name===selFirm);
+                  if (!f) return null;
+                  const fd = deals.filter(d=>(d.firms||[]).includes(selFirm)).sort((a,b)=>(b.amount_usd||0)-(a.amount_usd||0));
+                  return <div className="fu">
+                    <h2 style={{fontSize:18,fontWeight:700,color:"#eee",marginBottom:4}}>{selFirm}</h2>
+                    <div style={{display:"flex",gap:5,marginBottom:16}}>{f.cats.map(c=><Badge key={c} t={c} c={CC[c]} />)}</div>
+                    <div style={{display:"flex",gap:20,marginBottom:20}}>
+                      {[{l:"Deals",v:f.cnt,c:"#eee"},{l:"Capital",v:$(f.cap),c:"#34d399"},{l:"Lead Rounds",v:f.leads,c:"#a78bfa"}].map(k=>
+                        <div key={k.l} className="kpi"><div className="kpi-label">{k.l}</div><div className="kpi-val mono" style={{color:k.c}}>{k.v}</div></div>)}
+                    </div>
+                    <div className="kpi-label" style={{marginBottom:6}}>Deals</div>
+                    <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+                      {["Company","Amount","Stage","Sector","Role","Date"].map(h=>
+                        <th key={h} style={{cursor:"default",textAlign:h==="Amount"?"right":"left"}}>{h}</th>)}
+                    </tr></thead><tbody>
+                      {fd.map((d,i) => {const isLead=(d.lead_firms||[]).includes(selFirm);
+                        return <tr key={d.id} className={i%2?"":"stripe"}>
+                          <td><span style={{fontWeight:600,color:"#eee"}}>{d.company_name}</span><div style={{fontSize:10,color:"#4a4b60",marginTop:1}}>{d.description}</div></td>
+                          <td style={{textAlign:"right"}} className="mono green"><b>{$(d.amount_usd)}</b></td>
+                          <td><Badge t={d.stage} c={SC[d.stage]} /></td>
+                          <td style={{color:CC[d.category],fontSize:11}}>{d.category}</td>
+                          <td><Badge t={isLead?"★ Lead":"Co-Inv"} c={isLead?"#a78bfa":"#4a4b60"} /></td>
+                          <td className="mono muted" style={{fontSize:10.5}}>{(d.date_announced||"").slice(5)}</td>
+                        </tr>;})}
+                    </tbody></table>
+                  </div>;
+                })() : <div className="empty"><div><div style={{fontSize:32,marginBottom:6}}>◆</div><div style={{fontSize:13}}>Select a firm</div></div></div>}
+              </div>
+            </div>}
+
+            {/* ── PARTNERS ── */}
+            {view==="partners" && <div style={{flex:1,overflow:"auto"}} className="fu">
+              <table style={{fontSize:12}}>
+                <thead><tr>
+                  <th style={{cursor:"default"}}>Partner / GP</th>
+                  <th style={{cursor:"default"}}>Title</th>
+                  <th style={{cursor:"default"}}>Firm</th>
+                  <th style={{cursor:"default"}}>Focus Areas</th>
+                  <th style={{cursor:"default",textAlign:"right"}}>Deals</th>
+                </tr></thead>
+                <tbody>
+                  {investors.filter(p=>!q||p.name.toLowerCase().includes(q.toLowerCase())||(p.firm_name||"").toLowerCase().includes(q.toLowerCase()))
+                    .filter(p=>!selFirm||(p.firm_name||"")===selFirm)
+                    .map((p,i) =>
+                    <tr key={p.id||p.name+i} className={i%2===0?"stripe":""}>
+                      <td style={{fontWeight:600,color:"#eee"}}>{p.name}</td>
+                      <td style={{color:"#777",fontSize:11}}>{p.title || "—"}</td>
+                      <td>{p.firm_name ? <button className="link" onClick={()=>goFirm(p.firm_name)} style={{fontSize:12}}>{p.firm_name}</button> : "—"}</td>
+                      <td style={{fontSize:11,color:"#777"}}>{p.focus_areas || (p.firm_sectors ? JSON.parse(p.firm_sectors||"[]").join(", ") : "—")}</td>
+                      <td className="mono" style={{textAlign:"right",fontWeight:700,color:"#ddd"}}>{p.deal_count||0}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              {investors.length===0 && <div className="empty" style={{padding:60}}>No partner data yet — run scrapers to populate</div>}
+            </div>}
+
+            {/* ── SECTORS ── */}
+            {view==="categories" && <div style={{flex:1,display:"flex",overflow:"hidden"}} className="fu">
+              <div style={{width:360,borderRight:"1px solid #191a2e",overflow:"auto",flexShrink:0}}>
+                {catAgg.map(c => {const on=selCat===c.cat;const col=CC[c.cat]||"#888";
+                  return <div key={c.cat} onClick={()=>setSelCat(on?null:c.cat)}
+                    className={`sidebar-item ${on?"on":""}`} style={{borderLeft:`3px solid ${on?col:"transparent"}`}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                      <span style={{fontWeight:600,color:on?col:"#ddd",fontSize:13}}>{c.cat}</span>
+                      <span className="mono green" style={{fontSize:13,fontWeight:700}}>{$(c.cap)}</span>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <span style={{fontSize:10.5,color:"#555"}}>{c.cnt} deals · avg {$(c.avg)}</span>
+                      <div style={{display:"flex",gap:2}}>{Object.entries(c.stages).sort((a,b)=>b[1]-a[1]).map(([s,n])=>
+                        <span key={s} className="mono" style={{fontSize:8.5,padding:"1px 4px",borderRadius:2,background:SC[s]+"15",color:SC[s]}}>{s.replace("Series ","S")}:{n}</span>
+                      )}</div>
+                    </div>
+                    <div className="chart-bar"><div className="chart-fill" style={{width:`${c.cap/catAgg[0].cap*100}%`,background:col}} /></div>
+                  </div>;})}
+              </div>
+              <div style={{flex:1,overflow:"auto",padding:20}}>
+                {selCat ? (() => {
+                  const c = catAgg.find(x=>x.cat===selCat);
+                  if (!c) return null;
+                  const col = CC[c.cat]||"#888";
+                  const cd = deals.filter(d=>d.category===c.cat).sort((a,b)=>(b.amount_usd||0)-(a.amount_usd||0));
+                  const cfm = {};
+                  cd.forEach(d=>(d.firms||[]).forEach(fn=>{if(!cfm[fn])cfm[fn]={name:fn,cap:0,cnt:0,leads:0};cfm[fn].cap+=d.amount_usd||0;cfm[fn].cnt++;if((d.lead_firms||[]).includes(fn))cfm[fn].leads++;}));
+                  const cfl = Object.values(cfm).sort((a,b)=>b.cap-a.cap);
+                  return <div className="fu">
+                    <h2 style={{fontSize:18,fontWeight:700,color:col,marginBottom:4}}>{c.cat}</h2>
+                    <div style={{display:"flex",gap:4,marginBottom:16}}>{Object.entries(c.stages).sort((a,b)=>b[1]-a[1]).map(([s,n])=><Badge key={s} t={`${s}: ${n}`} c={SC[s]} />)}</div>
+                    <div style={{display:"flex",gap:16,marginBottom:18}}>
+                      {[{l:"Deals",v:c.cnt,c:"#eee"},{l:"Capital",v:$(c.cap),c:"#34d399"},{l:"Avg Size",v:$(c.avg),c:"#f59e0b"},{l:"Investors",v:cfl.length,c:"#a78bfa"}].map(k=>
+                        <div key={k.l} className="kpi"><div className="kpi-label">{k.l}</div><div className="kpi-val mono" style={{color:k.c}}>{k.v}</div></div>)}
+                    </div>
+                    {cfl.length>0 && <><div className="kpi-label" style={{marginBottom:6}}>Active Investors</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:6,marginBottom:16}}>
+                        {cfl.map(f=><div key={f.name} className="investor-card" onClick={()=>goFirm(f.name)}>
+                          <div><div style={{fontSize:11.5,fontWeight:600,color:"#ddd"}}>{f.name}</div>
+                            <div style={{fontSize:9.5,color:"#555",marginTop:1}}>{f.cnt} deals · {f.leads} leads</div></div>
+                          <div className="mono green" style={{fontSize:11,fontWeight:700}}>{$(f.cap)}</div>
+                        </div>)}</div></>}
+                    <div className="kpi-label" style={{marginBottom:6}}>All {c.cat} Deals</div>
+                    <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+                      {["Company","Amount","Stage","Lead Investor","Date"].map(h=>
+                        <th key={h} style={{cursor:"default",textAlign:h==="Amount"?"right":"left"}}>{h}</th>)}
+                    </tr></thead><tbody>{cd.map((d,i)=>{const lead=(d.lead_firms||[])[0];
+                      return <tr key={d.id} className={i%2?"":"stripe"}>
+                        <td><span style={{fontWeight:600,color:"#eee"}}>{d.company_name}</span><div style={{fontSize:10,color:"#4a4b60",marginTop:1}}>{d.description}</div></td>
+                        <td style={{textAlign:"right"}} className="mono green"><b>{$(d.amount_usd)}</b></td>
+                        <td><Badge t={d.stage} c={SC[d.stage]} /></td>
+                        <td>{lead?<button className="link" onClick={()=>goFirm(lead)} style={{fontSize:11.5}}>★ {lead}</button>:<span className="muted">—</span>}</td>
+                        <td className="mono muted" style={{fontSize:10.5}}>{d.date_announced}</td>
+                      </tr>;})}
+                    </tbody></table>
+                  </div>;
+                })() : <div className="empty"><div><div style={{fontSize:32,marginBottom:6}}>◧</div><div style={{fontSize:13}}>Select a sector</div></div></div>}
+              </div>
+            </div>}
+          </div>
+
+          {/* Footer */}
+          <div className="mono" style={{padding:"6px 20px",borderTop:"1px solid #191a2e",display:"flex",justifyContent:"space-between",background:"#0c0d13",fontSize:10,color:"#33344a"}}>
+            <span>{rows.length}/{deals.length} deals · {$(totCap)} · {firmAgg.length} firms · {investors.length} partners</span>
+            <span>Live from API · AlleyWatch · SEC EDGAR · Crunchbase · News · Delaware Corps</span>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
+
