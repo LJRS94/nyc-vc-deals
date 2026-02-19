@@ -62,7 +62,6 @@ def init_db(db_path: str = DB_PATH):
         cols = [r[1] for r in conn.execute("PRAGMA table_info(deals)").fetchall()]
         if "company_name_normalized" not in cols:
             # Run migration for existing DB, then return
-            conn.close()
             migrate_db(db_path)
             print(f"[DB] Initialized database at {db_path}")
             return
@@ -262,7 +261,6 @@ def init_db(db_path: str = DB_PATH):
     """)
 
     conn.commit()
-    conn.close()
     print(f"[DB] Initialized database at {db_path}")
 
 
@@ -289,10 +287,38 @@ def batch_connection(db_path: str = DB_PATH):
         # Don't close — thread-local connection is reused by get_connection()
 
 
+# ── Column whitelists (prevent SQL injection via kwargs keys) ──
+
+_FIRMS_COLUMNS = {
+    "website", "location", "description", "aum_range",
+    "focus_stages", "focus_sectors", "portfolio_url",
+}
+_INVESTORS_COLUMNS = {
+    "title", "linkedin_url", "twitter_url", "focus_areas",
+}
+_DEALS_COLUMNS = {
+    "company_website", "company_description", "stage", "amount_usd",
+    "amount_disclosed", "date_announced", "date_closed", "lead_investor_id",
+    "category_id", "subcategory", "source_url", "source_type",
+    "company_name_normalized", "raw_text", "confidence_score",
+}
+_PORTFOLIO_COLUMNS = {
+    "company_website", "description", "lead_partner", "sector", "source_url",
+}
+
+
+def _validate_columns(kwargs: dict, allowed: set, table: str):
+    """Raise ValueError if any kwargs key is not in the allowed set."""
+    bad = set(kwargs.keys()) - allowed
+    if bad:
+        raise ValueError(f"Invalid column(s) for {table}: {bad}")
+
+
 # ── CRUD helpers ──────────────────────────────────────────────
 
 def upsert_firm(conn, name: str, **kwargs) -> int:
     """Insert or update a firm, return its ID."""
+    _validate_columns(kwargs, _FIRMS_COLUMNS, "firms")
     existing = conn.execute(
         "SELECT id FROM firms WHERE name = ?", (name,)
     ).fetchone()
@@ -318,6 +344,7 @@ def upsert_firm(conn, name: str, **kwargs) -> int:
 
 
 def upsert_investor(conn, name: str, firm_id: Optional[int] = None, **kwargs) -> int:
+    _validate_columns(kwargs, _INVESTORS_COLUMNS, "investors")
     existing = conn.execute(
         "SELECT id FROM investors WHERE name = ? AND firm_id IS ?",
         (name, firm_id)
@@ -336,6 +363,7 @@ def upsert_investor(conn, name: str, firm_id: Optional[int] = None, **kwargs) ->
 
 
 def insert_deal(conn, company_name: str, **kwargs) -> int:
+    _validate_columns(kwargs, _DEALS_COLUMNS, "deals")
     # Always set the normalized name for dedup
     if "company_name_normalized" not in kwargs:
         kwargs["company_name_normalized"] = _normalize_name(company_name)
@@ -368,8 +396,34 @@ def link_deal_investor(conn, deal_id: int, investor_id: int):
         conn.commit()
 
 
+def upsert_deal_metadata(conn, deal_id: int, key: str, value: str):
+    """Insert or update a key-value pair in deal_metadata."""
+    conn.execute(
+        "INSERT INTO deal_metadata (deal_id, key, value) VALUES (?, ?, ?) "
+        "ON CONFLICT(deal_id, key) DO UPDATE SET value = excluded.value",
+        (deal_id, key, value)
+    )
+    if not _is_batch(conn):
+        conn.commit()
+
+
+def get_deal_metadata(conn, deal_id: int, key: str = None) -> dict:
+    """Return {key: value} dict for a deal. If key given, returns just that key."""
+    if key is not None:
+        row = conn.execute(
+            "SELECT value FROM deal_metadata WHERE deal_id = ? AND key = ?",
+            (deal_id, key)
+        ).fetchone()
+        return {key: row["value"]} if row else {}
+    rows = conn.execute(
+        "SELECT key, value FROM deal_metadata WHERE deal_id = ?", (deal_id,)
+    ).fetchall()
+    return {r["key"]: r["value"] for r in rows}
+
+
 def upsert_portfolio_company(conn, firm_id: int, company_name: str, **kwargs) -> int:
     """Insert or update a portfolio company, return its ID."""
+    _validate_columns(kwargs, _PORTFOLIO_COLUMNS, "portfolio_companies")
     existing = conn.execute(
         "SELECT id FROM portfolio_companies WHERE firm_id = ? AND company_name = ?",
         (firm_id, company_name)
@@ -578,15 +632,15 @@ def migrate_db(db_path: str = DB_PATH):
     # Check if migration is needed by looking for company_name_normalized column
     cols = [row[1] for row in conn.execute("PRAGMA table_info(deals)").fetchall()]
     if "company_name_normalized" in cols:
-        # Check if alleywatch is already allowed — try an insert/rollback
+        # Check if alleywatch is already allowed — try an insert inside savepoint
         try:
             conn.execute("SAVEPOINT migration_check")
             conn.execute(
-                "INSERT INTO deals (company_name, source_type) VALUES ('__test__', 'alleywatch')"
+                "INSERT INTO deals (company_name, source_type) VALUES ('__migration_probe__', 'alleywatch')"
             )
+            # Rollback removes the probe row — no DELETE needed
             conn.execute("ROLLBACK TO migration_check")
             conn.execute("RELEASE migration_check")
-            conn.execute("DELETE FROM deals WHERE company_name = '__test__'")
             print("[DB] Schema already up to date")
             conn.close()
             return

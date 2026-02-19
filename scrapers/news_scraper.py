@@ -606,18 +606,39 @@ def process_deal(conn, title: str, url: str, full_text: str,
                 confidence_score=confidence,
             )
 
-            # Link investors
+            # Link investors (both investor records and firm records)
+            lead_investor_id = None
             for inv_data in investors:
                 inv_name = inv_data["name"]
+                role = inv_data.get("role", "participant")
+
+                # Check if this investor maps to a known firm
                 firm_row = conn.execute(
-                    "SELECT id FROM firms WHERE LOWER(name) LIKE ?",
-                    (f"%{inv_name.lower()}%",)
+                    "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
+                    (inv_name,)
                 ).fetchone()
-                if firm_row:
-                    link_deal_firm(conn, deal_id, firm_row["id"], inv_data["role"])
+                firm_id = firm_row["id"] if firm_row else None
+
+                # Create investor record and link to deal
+                inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
+                link_deal_investor(conn, deal_id, inv_id)
+
+                # Link firm to deal
+                if firm_id:
+                    link_deal_firm(conn, deal_id, firm_id, role)
                 else:
-                    firm_id = upsert_firm(conn, inv_name, location="Unknown")
-                    link_deal_firm(conn, deal_id, firm_id, inv_data["role"])
+                    new_firm_id = upsert_firm(conn, inv_name, location="Unknown")
+                    link_deal_firm(conn, deal_id, new_firm_id, role)
+
+                # Track lead investor
+                if role == "lead" and lead_investor_id is None:
+                    lead_investor_id = inv_id
+
+            if lead_investor_id:
+                conn.execute(
+                    "UPDATE deals SET lead_investor_id = ? WHERE id = ?",
+                    (lead_investor_id, deal_id)
+                )
 
             return deal_id
 
@@ -665,17 +686,34 @@ def process_deal(conn, title: str, url: str, full_text: str,
         confidence_score=0.7 if amount and stage != "Unknown" else 0.4,
     )
 
+    lead_investor_id = None
     for inv_data in investors:
         inv_name = inv_data["name"]
+        role = inv_data.get("role", "participant")
+
         firm_row = conn.execute(
-            "SELECT id FROM firms WHERE LOWER(name) LIKE ?",
-            (f"%{inv_name.lower()}%",)
+            "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
+            (inv_name,)
         ).fetchone()
-        if firm_row:
-            link_deal_firm(conn, deal_id, firm_row["id"], inv_data["role"])
+        firm_id = firm_row["id"] if firm_row else None
+
+        inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
+        link_deal_investor(conn, deal_id, inv_id)
+
+        if firm_id:
+            link_deal_firm(conn, deal_id, firm_id, role)
         else:
-            firm_id = upsert_firm(conn, inv_name, location="Unknown")
-            link_deal_firm(conn, deal_id, firm_id, inv_data["role"])
+            new_firm_id = upsert_firm(conn, inv_name, location="Unknown")
+            link_deal_firm(conn, deal_id, new_firm_id, role)
+
+        if role == "lead" and lead_investor_id is None:
+            lead_investor_id = inv_id
+
+    if lead_investor_id:
+        conn.execute(
+            "UPDATE deals SET lead_investor_id = ? WHERE id = ?",
+            (lead_investor_id, deal_id)
+        )
 
     return deal_id
 
@@ -892,7 +930,6 @@ def run_news_scraper(days_back: int = 14):
     """Main entry point for news scraping."""
     conn = get_connection()
     log_id = log_scrape(conn, "news_press")
-    conn.close()
 
     total_found = 0
     total_new = 0
@@ -978,11 +1015,14 @@ def run_news_scraper(days_back: int = 14):
         llm_results = extract_deals_batch(llm_articles) if llm_articles else {}
         logger.info(f"LLM extracted {sum(1 for v in llm_results.values() if v)}/{len(llm_articles)} articles")
 
+        # Build index-based lookup to avoid title collision (duplicate titles overwrite in dict)
+        llm_results_list = [llm_results.get(a["title"]) for a in llm_articles]
+
         # Batch insert deals (DB only, no HTTP)
         with batch_connection() as conn:
-            for title, url, full_text, source_type, date, nyc_ok in enriched:
+            for i, (title, url, full_text, source_type, date, nyc_ok) in enumerate(enriched):
                 try:
-                    llm_result = llm_results.get(title)
+                    llm_result = llm_results_list[i] if i < len(llm_results_list) else None
                     deal_id = process_deal(conn, title, url, full_text,
                                            source_type=source_type, date_announced=date,
                                            nyc_confirmed=nyc_ok,
@@ -1000,7 +1040,6 @@ def run_news_scraper(days_back: int = 14):
         try:
             conn_err = get_connection()
             finish_scrape(conn_err, log_id, "error", total_found, total_new, str(e))
-            conn_err.close()
         except Exception:
             pass
         logger.error(f"News scraper error: {e}")
@@ -1021,8 +1060,12 @@ def run_google_batch(batch_size: int = 15, days_back: int = 450):
     # Load batch state
     state = {"completed": [], "last_run": None}
     if os.path.exists(BATCH_STATE_FILE):
-        with open(BATCH_STATE_FILE) as f:
-            state = json.load(f)
+        try:
+            with open(BATCH_STATE_FILE) as f:
+                state = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("Corrupt batch state file, resetting")
+            state = {"completed": [], "last_run": None}
 
     completed_set = set(state.get("completed", []))
     pending = [q for q in all_queries if q not in completed_set]
@@ -1040,7 +1083,6 @@ def run_google_batch(batch_size: int = 15, days_back: int = 450):
 
     conn = get_connection()
     log_id = log_scrape(conn, "google_batch")
-    conn.close()
 
     all_articles = []
     consecutive_fails = 0

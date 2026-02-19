@@ -619,7 +619,6 @@ def run_delaware_scraper(days_back: int = 14):
     """
     conn = get_connection()
     log_id = log_scrape(conn, "delaware_filings")
-    conn.close()
 
     total_found = 0
     total_new = 0
@@ -663,7 +662,6 @@ def run_delaware_scraper(days_back: int = 14):
             ORDER BY created_at DESC
             LIMIT 20
         """).fetchall()
-        read_conn.close()
 
         de_updates = []
         for deal in recent_deals:
@@ -772,7 +770,6 @@ def run_delaware_scraper(days_back: int = 14):
         try:
             conn_err = get_connection()
             finish_scrape(conn_err, log_id, "error", total_found, total_new, str(e))
-            conn_err.close()
         except Exception:
             pass
         logger.error(f"Delaware scraper error: {e}")

@@ -380,9 +380,9 @@ def seed_firms():
 
     with batch_connection() as conn:
         for firm_data in NYC_VC_FIRMS:
-            name = firm_data.pop("name")
-            upsert_firm(conn, name, **firm_data)
-            firm_data["name"] = name  # restore
+            name = firm_data["name"]
+            kwargs = {k: v for k, v in firm_data.items() if k != "name"}
+            upsert_firm(conn, name, **kwargs)
         for firm_data in extra:
             name = firm_data.get("name")
             if not name:
@@ -611,8 +611,6 @@ def run_portfolio_scraper():
     except Exception as e:
         finish_scrape(conn, log_id, "error", error_message=str(e))
         logger.error(f"Portfolio scraper error: {e}")
-    finally:
-        conn.close()
 
 
 def run_firm_scraper():
@@ -661,8 +659,6 @@ def run_firm_scraper():
     except Exception as e:
         finish_scrape(conn, log_id, "error", error_message=str(e))
         logger.error(f"Firm scraper error: {e}")
-    finally:
-        conn.close()
 
 
 if __name__ == "__main__":

@@ -230,7 +230,7 @@ def validate_company_name(name: str) -> bool:
     if _HEADLINE_PATTERNS.search(name):
         return False
     # Reject if it's mostly lowercase words (likely a sentence fragment)
-    words = name.split()
+    words = [w for w in name.split() if w]
     if len(words) > 3:
         lowercase_count = sum(1 for w in words if w[0].islower())
         if lowercase_count > len(words) * 0.6:

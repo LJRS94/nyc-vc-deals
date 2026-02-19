@@ -25,6 +25,8 @@ from scrapers.sec_scraper import run_sec_scraper
 from scrapers.delaware_scraper import run_delaware_scraper
 from scrapers.alleywatch_scraper import run_alleywatch_scraper
 from scrapers.llm_extract import extract_deal_from_text, validate_company_name, clean_company_name
+from scrapers.enrichment import run_web_enrichment
+from scrapers.additional_sources import run_additional_sources
 
 logging.basicConfig(
     level=logging.INFO,
@@ -122,8 +124,6 @@ def print_summary():
             "source": row["source_type"],
         })
 
-    conn.close()
-
     logger.info("\n" + "=" * 50)
     logger.info("DATABASE SUMMARY")
     logger.info("=" * 50)
@@ -196,7 +196,6 @@ def export_csv(output_path: str = "nyc_vc_deals_export.csv"):
                 row["firms"], row["investors"]
             ])
 
-    conn.close()
     logger.info(f"Exported {len(rows)} deals to {output_path}")
 
 
@@ -253,7 +252,6 @@ def export_json(output_path: str = "nyc_vc_deals_export.json"):
     with open(output_path, "w") as f:
         json.dump({"deals": deals, "exported_at": datetime.now().isoformat()}, f, indent=2)
 
-    conn.close()
     logger.info(f"Exported {len(deals)} deals to {output_path}")
 
 
@@ -272,7 +270,6 @@ def enrich_deals(limit: int = 200):
            LIMIT ?""",
         (limit,)
     ).fetchall()
-    conn.close()
 
     if not rows:
         logger.info("No deals need enrichment")
@@ -387,7 +384,6 @@ def discover_firms(promote: bool = False):
         GROUP BY f.name
         ORDER BY deal_count DESC
     """).fetchall()
-    conn.close()
 
     candidates = []
     for row in all_firms:
@@ -472,6 +468,18 @@ def main():
     enrich_p = sub.add_parser("enrich", help="Backfill descriptions via LLM")
     enrich_p.add_argument("--limit", type=int, default=200, help="Max deals to enrich")
 
+    web_p = sub.add_parser("enrich-web", help="Enrich deals via Google CSE + Apollo.io")
+    web_p.add_argument("--google-limit", type=int, default=95, help="Max Google CSE queries (default 95)")
+    web_p.add_argument("--apollo-limit", type=int, default=95, help="Max Apollo enrichments (default 95)")
+    web_p.add_argument("--skip-google", action="store_true", help="Skip Google CSE website lookup")
+    web_p.add_argument("--skip-apollo", action="store_true", help="Skip Apollo.io org enrichment")
+    web_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
+
+    extra_p = sub.add_parser("scrape-extra", help="Run additional data source scrapers")
+    extra_p.add_argument("--days", type=int, default=30, help="Days to look back")
+    extra_p.add_argument("--skip", nargs="*", default=[], help="Sources to skip (opencorporates crunchbase ny_dos sbir)")
+    extra_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
+
     firms_p = sub.add_parser("firms", help="Firm management")
     firms_sub = firms_p.add_subparsers(dest="firms_cmd")
     discover_p = firms_sub.add_parser("discover", help="Find new firms from scraped deals")
@@ -521,6 +529,22 @@ def main():
 
     elif args.command == "enrich":
         enrich_deals(limit=args.limit)
+
+    elif args.command == "enrich-web":
+        run_web_enrichment(
+            google_limit=args.google_limit,
+            apollo_limit=args.apollo_limit,
+            skip_google=args.skip_google,
+            skip_apollo=args.skip_apollo,
+            dry_run=args.dry_run,
+        )
+
+    elif args.command == "scrape-extra":
+        run_additional_sources(
+            days_back=args.days,
+            skip=args.skip or None,
+            dry_run=args.dry_run,
+        )
 
     elif args.command == "firms":
         if args.firms_cmd == "discover":

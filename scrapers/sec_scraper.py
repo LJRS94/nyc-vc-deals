@@ -21,7 +21,8 @@ from database import (
 )
 from fetcher import fetch, SEC_HEADERS
 from scrapers.utils import (
-    classify_stage_from_amount, normalize_company_name, classify_sector
+    classify_stage_from_amount, normalize_company_name, classify_sector,
+    should_skip_deal, validate_deal_amount,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,122 @@ def _is_nyc(text: str) -> bool:
     """Check if an address/text refers to NYC."""
     t = text.lower()
     return any(kw in t for kw in NYC_KEYWORDS)
+
+
+# ── Junk-filing filters ─────────────────────────────────────────
+
+# Entity suffixes that indicate non-startup structures (real estate LLCs, funds, etc.)
+_ENTITY_BLOCKLIST = re.compile(
+    r"""(?ix)              # case-insensitive, verbose
+    (?:^|\s)               # word boundary
+    (?:
+        L\.?L\.?C\.?       # LLC, L.L.C.
+      | L\.?P\.?           # LP, L.P.
+      | LTD\.?             # LTD
+      | REIT               # Real Estate Investment Trust
+      | DST                # Delaware Statutory Trust
+      | Trust              # trust
+      | SPV                # Special Purpose Vehicle
+      | PLC(?:/ADR)?       # PLC, PLC/ADR
+      | EB[\s-]?5          # EB-5 immigrant investor funds
+    )
+    (?:\s|$|[.,])          # word boundary / end
+    """,
+)
+
+_ENTITY_KEYWORD_BLOCKLIST = re.compile(
+    r"""(?ix)
+    (?:
+        \bFund(?:ing)?\b
+      | \bHoldings?\b
+      | \bPartners(?:hip)?\b
+      | \bAssociates?\b
+      | \bInvestors?\b
+      | \bRealty\b
+      | \bEstate\b
+      | \bMember\b
+      | \bVentures\s+Fund\b
+      | \bCapital\s+Fund\b
+      | \bCapital\s+Partners\b
+      | \bCapital\s+Management\b
+      | \bAcquisition\s+Corp\b
+      | \bMaster\s+Fund\b
+      | \bInvestment\s+Fund\b
+      | \bPooled\s+Investment\b
+    )
+    """,
+)
+
+# Names that start with a street address (e.g. "130 Graham Funding L.P.")
+_ADDRESS_NAME_RE = re.compile(r"^\d+\s+[A-Za-z]")
+
+# CIK suffix appended by EDGAR (e.g. "Acme Inc (CIK 0002012881)")
+_CIK_SUFFIX_RE = re.compile(r"\s*\(CIK\s*\d+\)\s*$", re.I)
+
+# SEC industryGroupType values that are almost never startups
+_JUNK_INDUSTRY_GROUPS = {
+    "real estate",
+    "pooled investment fund",
+    "banking and financial services",
+    "investing",
+    "insurance",
+}
+
+
+def _clean_sec_name(name: str) -> str:
+    """Strip CIK suffixes and extra whitespace from SEC entity names."""
+    if not name:
+        return name
+    return _CIK_SUFFIX_RE.sub("", name).strip()
+
+
+def _is_junk_sec_company(name: str) -> bool:
+    """Return True if the company name matches junk entity patterns."""
+    if not name:
+        return True
+    n = name.strip()
+    if _ADDRESS_NAME_RE.match(n):
+        return True
+    if _ENTITY_BLOCKLIST.search(n):
+        return True
+    if _ENTITY_KEYWORD_BLOCKLIST.search(n):
+        return True
+    return False
+
+
+def _should_keep_sec_filing(company_name: str, details: Optional[Dict], conn) -> bool:
+    """
+    Master gate — returns True only if the filing looks like a real startup deal.
+    Combines name filter, industry filter, amount validation, and VC-firm check.
+    """
+    # 1. Name filter
+    if _is_junk_sec_company(company_name):
+        logger.debug(f"Skipping junk name: {company_name}")
+        return False
+
+    # 2. Industry group filter (from Form D XML)
+    if details:
+        industry = (details.get("industry") or "").lower().strip()
+        if industry in _JUNK_INDUSTRY_GROUPS:
+            logger.debug(f"Skipping junk industry '{industry}': {company_name}")
+            return False
+
+    # 3. Amount validation
+    amount = None
+    if details:
+        amount = details.get("amount_sold") or details.get("total_offering")
+    stage = classify_stage_from_amount(amount)
+    if not validate_deal_amount(amount, stage):
+        logger.debug(f"Skipping invalid amount {amount}: {company_name}")
+        return False
+
+    # 4. VC firm check — reject if the "company" is actually a known VC firm
+    skip_reason = should_skip_deal(conn, company_name)
+    if skip_reason:
+        logger.debug(f"Skipping: {skip_reason}")
+        return False
+
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -219,7 +336,10 @@ def fetch_form_d_details(cik: str = None, accession: str = None) -> Optional[Dic
         # Step 1: Find the filing index page
         if accession:
             acc_clean = accession.replace("-", "")
-            index_url = f"https://www.sec.gov/Archives/edgar/data/{cik or acc_clean[:10]}/{acc_clean}/"
+            if not cik:
+                # CIK is the first 10 digits of a clean accession number
+                cik = acc_clean[:10].lstrip("0") or "0"
+            index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/"
         elif cik:
             search_url = (
                 f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
@@ -245,7 +365,7 @@ def fetch_form_d_details(cik: str = None, accession: str = None) -> Optional[Dic
         xml_link = None
         for a in soup.find_all("a", href=True):
             href = a["href"]
-            if href.endswith(".xml") and "primary" not in href.lower():
+            if href.endswith(".xml") and "FilingSummary" not in href:
                 xml_link = f"https://www.sec.gov{href}" if href.startswith("/") else href
                 break
 
@@ -259,12 +379,17 @@ def fetch_form_d_details(cik: str = None, accession: str = None) -> Optional[Dic
 
         root = ET.fromstring(xml_resp.text)
 
+        # Single-pass tag collection (avoids O(n²) repeated tree traversals)
+        tag_values = {}
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag not in tag_values and elem.text and elem.text.strip():
+                tag_values[tag] = elem.text.strip()
+
         def find_any(*paths):
-            """Find text by trying multiple tag names (namespace-agnostic)."""
-            for elem in root.iter():
-                tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-                if tag in paths and elem.text:
-                    return elem.text.strip()
+            for p in paths:
+                if p in tag_values:
+                    return tag_values[p]
             return None
 
         result = {
@@ -325,7 +450,6 @@ def run_sec_scraper(days_back: int = 180):
     """
     conn = get_connection()
     log_id = log_scrape(conn, "sec_edgar")
-    conn.close()
 
     total_found = 0
     total_new = 0
@@ -365,7 +489,15 @@ def run_sec_scraper(days_back: int = 180):
 
         # Enrich with XML details (batch with rate limiting)
         enriched = []
+        skipped_early = 0
         for i, filing in enumerate(all_filings):
+            # Early name filter — skip obvious junk before expensive XML fetch
+            raw_name = _clean_sec_name(filing["company_name"])
+            filing["company_name"] = raw_name
+            if _is_junk_sec_company(raw_name):
+                skipped_early += 1
+                continue
+
             cik = filing.get("cik")
             accession = filing.get("accession_number")
             details = None
@@ -384,14 +516,23 @@ def run_sec_scraper(days_back: int = 180):
 
             enriched.append((filing, details))
 
-        logger.info(f"Enriched filings (NYC confirmed): {len(enriched)}")
+        logger.info(
+            f"Enriched filings (NYC confirmed): {len(enriched)} "
+            f"(skipped {skipped_early} junk names early)"
+        )
 
         # Insert deals
+        skipped_filter = 0
         with batch_connection() as conn:
             for filing, details in enriched:
-                company_name = filing["company_name"]
+                company_name = _clean_sec_name(filing["company_name"])
                 if details and details.get("company_name"):
-                    company_name = details["company_name"]
+                    company_name = _clean_sec_name(details["company_name"])
+
+                # Full filter — name + industry + amount + VC-firm check
+                if not _should_keep_sec_filing(company_name, details, conn):
+                    skipped_filter += 1
+                    continue
 
                 # Normalized dedup check
                 norm = normalize_company_name(company_name)
@@ -413,14 +554,21 @@ def run_sec_scraper(days_back: int = 180):
                 category_name = classify_sector(f"{company_name} {industry}")
                 cat_id = get_category_id(conn, category_name) if category_name else None
 
-                # Skip very large rounds (not early stage)
-                if amount and amount > 200_000_000:
-                    continue
-
                 filing_url = filing.get("filing_url") or (
                     f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
                     f"&company={company_name}&type=D&dateb=&owner=include&count=10"
                 )
+
+                # Confidence scoring — tiered by enrichment quality
+                has_xml = details is not None
+                has_industry = bool(industry)
+                has_amount = amount is not None
+                if has_xml and has_industry:
+                    confidence = 0.85 if has_amount else 0.5
+                elif has_xml:
+                    confidence = 0.7 if has_amount else 0.4
+                else:
+                    confidence = 0.5 if has_amount else 0.3
 
                 deal_id = insert_deal(
                     conn, company_name,
@@ -431,7 +579,7 @@ def run_sec_scraper(days_back: int = 180):
                     source_url=filing_url,
                     source_type="sec_filing",
                     category_id=cat_id,
-                    confidence_score=0.9 if amount else 0.5,
+                    confidence_score=confidence,
                     raw_text=json.dumps({
                         "cik": filing.get("cik"),
                         "accession": filing.get("accession_number"),
@@ -454,13 +602,14 @@ def run_sec_scraper(days_back: int = 180):
 
             finish_scrape(conn, log_id, "success", total_found, total_new)
 
+        logger.info(f"Filtered out {skipped_filter} filings at insertion stage")
+
         logger.info(f"SEC scraper: {total_new} new deals from {total_found} filings")
 
     except Exception as e:
         try:
             conn_err = get_connection()
             finish_scrape(conn_err, log_id, "error", total_found, total_new, str(e))
-            conn_err.close()
         except Exception:
             pass
         logger.error(f"SEC scraper error: {e}")

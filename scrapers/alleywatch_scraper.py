@@ -116,12 +116,7 @@ def parse_alleywatch_daily(url: str) -> List[Dict]:
             return deals
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Extract date from URL
-        date_match = re.search(r"/(\d{4})/(\d{2})/.*?(\d{1,2})-(\d{4})", url)
         report_date = None
-        if date_match:
-            # URL format: the-alleywatch-startup-daily-funding-report-M-D-YYYY
-            pass
         # Try the page title
         title = soup.find("title")
         if title:
@@ -648,7 +643,6 @@ def run_alleywatch_scraper(days_back: int = 14):
     """
     conn = get_connection()
     log_id = log_scrape(conn, "alleywatch")
-    conn.close()
 
     all_deals = []
     new_count = 0
@@ -695,7 +689,6 @@ def run_alleywatch_scraper(days_back: int = 14):
         try:
             conn_err = get_connection()
             finish_scrape(conn_err, log_id, "error", error_message=str(e))
-            conn_err.close()
         except Exception:
             pass
         logger.error(f"AlleyWatch scraper error: {e}")
