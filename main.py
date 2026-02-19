@@ -24,6 +24,7 @@ from scrapers.news_scraper import run_news_scraper, run_google_batch
 from scrapers.sec_scraper import run_sec_scraper
 from scrapers.delaware_scraper import run_delaware_scraper
 from scrapers.alleywatch_scraper import run_alleywatch_scraper
+from scrapers.llm_extract import extract_deal_from_text, validate_company_name, clean_company_name
 
 logging.basicConfig(
     level=logging.INFO,
@@ -256,6 +257,81 @@ def export_json(output_path: str = "nyc_vc_deals_export.json"):
     logger.info(f"Exported {len(deals)} deals to {output_path}")
 
 
+def enrich_deals(limit: int = 200):
+    """
+    Backfill deals that have empty company_description.
+    Sends raw_text through LLM and updates name/description/stage.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT id, company_name, stage, raw_text, source_url
+           FROM deals
+           WHERE (company_description IS NULL OR company_description = '')
+             AND raw_text IS NOT NULL AND raw_text != ''
+           ORDER BY created_at DESC
+           LIMIT ?""",
+        (limit,)
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        logger.info("No deals need enrichment")
+        return
+
+    logger.info(f"Enriching {len(rows)} deals via LLM...")
+    updated = 0
+
+    for row in rows:
+        deal_id = row["id"]
+        company_name = row["company_name"]
+        raw_text = row["raw_text"]
+        current_stage = row["stage"]
+
+        result = extract_deal_from_text(company_name, raw_text)
+        if not result:
+            continue
+
+        # Build update fields
+        updates = {}
+
+        # Update description
+        desc = result.get("description")
+        if desc and len(desc) > 10:
+            updates["company_description"] = desc[:500]
+
+        # Update company name if LLM gives a cleaner one
+        llm_name = result.get("company_name")
+        if llm_name:
+            llm_name = clean_company_name(llm_name)
+            if llm_name and validate_company_name(llm_name) and len(llm_name) < len(company_name):
+                updates["company_name"] = llm_name
+
+        # Update stage if currently Unknown
+        llm_stage = result.get("stage")
+        if current_stage == "Unknown" and llm_stage and llm_stage != "Unknown":
+            if llm_stage in ("Pre-Seed", "Seed", "Series A", "Series B", "Series C+"):
+                updates["stage"] = llm_stage
+
+        if not updates:
+            continue
+
+        # Apply updates
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [deal_id]
+        conn2 = get_connection()
+        conn2.execute(
+            f"UPDATE deals SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            values
+        )
+        conn2.commit()
+        updated += 1
+
+        changes = ", ".join(f"{k}={v!r:.40}" for k, v in updates.items())
+        logger.info(f"  Enriched #{deal_id} {company_name}: {changes}")
+
+    logger.info(f"Enrichment complete: {updated}/{len(rows)} deals updated")
+
+
 FIRMS_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "firms.json")
 
 # Junk patterns — these are parsing artifacts, not real firm names
@@ -393,6 +469,9 @@ def main():
     batch_p.add_argument("--size", type=int, default=15, help="Number of queries per batch")
     batch_p.add_argument("--days", type=int, default=450, help="Days to look back")
 
+    enrich_p = sub.add_parser("enrich", help="Backfill descriptions via LLM")
+    enrich_p.add_argument("--limit", type=int, default=200, help="Max deals to enrich")
+
     firms_p = sub.add_parser("firms", help="Firm management")
     firms_sub = firms_p.add_subparsers(dest="firms_cmd")
     discover_p = firms_sub.add_parser("discover", help="Find new firms from scraped deals")
@@ -439,6 +518,9 @@ def main():
 
     elif args.command == "export-json":
         export_json(args.output)
+
+    elif args.command == "enrich":
+        enrich_deals(limit=args.limit)
 
     elif args.command == "firms":
         if args.firms_cmd == "discover":

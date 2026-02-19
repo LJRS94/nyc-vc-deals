@@ -32,6 +32,10 @@ from fetcher import fetch, fetch_many
 from scrapers.utils import (
     normalize_stage, parse_amount, classify_sector,
     parse_investors, normalize_company_name, should_skip_deal,
+    validate_deal_amount,
+)
+from scrapers.llm_extract import (
+    extract_alleywatch_deals, validate_company_name, clean_company_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,15 +138,61 @@ def parse_alleywatch_daily(url: str) -> List[Dict]:
                 if dm:
                     report_date = f"{dm.group(1)}-{dm.group(2)}-01"
 
-        # Find the main content area
-        content = soup.find("div", class_=re.compile(r"entry-content|post-content|article")) or soup.find("article")
-        if not content:
-            content = soup
+        # Find the main content area — multiple selector fallbacks for site redesigns
+        content = (
+            soup.find("div", class_=re.compile(r"entry-content|post-content|article")) or
+            soup.find("div", class_=re.compile(r"td-post-content|tdb-block-inner")) or
+            soup.find("article") or
+            soup.find("main") or
+            soup
+        )
 
         # Each deal is typically in its own <p> or text block
         # Pattern: "CompanyName, a/an [description], has raised $XM in [Round] funding"
         text = content.get_text(separator="\n")
         lines = text.split("\n")
+
+        # ── Try LLM extraction first (much more reliable than regex) ──
+        llm_deals = extract_alleywatch_deals(text)
+        if llm_deals:
+            for ld in llm_deals:
+                company = ld.get("company_name", "").strip()
+                if not company or not validate_company_name(company):
+                    continue
+                company = clean_company_name(company)
+
+                amount = ld.get("amount")
+                stage_raw = ld.get("stage", "Unknown")
+                stage = normalize_stage(stage_raw) if stage_raw != "Unknown" else "Unknown"
+                if amount and not validate_deal_amount(amount, stage):
+                    amount = None
+
+                lead_inv = ld.get("lead_investor")
+                all_investors = ld.get("investors", [])
+                if lead_inv and lead_inv not in all_investors:
+                    all_investors.insert(0, lead_inv)
+
+                sector = ld.get("sector") or classify_sector(ld.get("description", "") + " " + company)
+
+                deals.append({
+                    "company_name": company,
+                    "description": (ld.get("description") or "")[:500] or None,
+                    "amount": amount,
+                    "round_type": stage_raw,
+                    "stage": stage,
+                    "lead_investor": lead_inv,
+                    "all_investors": all_investors,
+                    "founders": None,
+                    "founded_year": None,
+                    "total_raised": None,
+                    "sector": sector,
+                    "source_url": url,
+                    "date_announced": report_date,
+                })
+            logger.info(f"[AlleyWatch] LLM extracted {len(deals)} deals from {url}")
+            return deals
+
+        # ── Regex fallback (original logic) ──
 
         # Regex for funding announcements
         funding_pattern = re.compile(
@@ -618,10 +668,9 @@ def run_alleywatch_scraper(days_back: int = 14):
             deals = parse_monthly_roundup(url)
             all_deals.extend(deals)
 
-        # ── Phase 3: Google News RSS ──
-        logger.info("── Phase 3: Google News RSS ──")
-        news_deals = scrape_google_news_deals(days_back=days_back)
-        all_deals.extend(news_deals)
+        # ── Phase 3: Google News RSS (disabled — consistently returns 503) ──
+        # Bing News in news_scraper.py covers the same ground more reliably.
+        logger.info("── Phase 3: Google News RSS (skipped — 503s) ──")
 
         # ── Phase 4: Deduplicate & Insert (single batch commit) ──
         logger.info(f"── Phase 4: Inserting {len(all_deals)} parsed deals ──")

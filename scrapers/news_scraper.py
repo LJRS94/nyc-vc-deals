@@ -24,7 +24,10 @@ from fetcher import fetch, NEWS_TTL
 from scrapers.utils import (
     classify_sector as _classify_sector, normalize_stage as _normalize_stage,
     parse_amount as _parse_amount, normalize_company_name, company_names_match,
-    should_skip_deal,
+    should_skip_deal, validate_deal_amount,
+)
+from scrapers.llm_extract import (
+    extract_deals_batch, validate_company_name, clean_company_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -522,45 +525,133 @@ def extract_investors(text: str) -> List[Dict]:
 def process_deal(conn, title: str, url: str, full_text: str,
                  source_type: str = "news_article",
                  date_announced: str = None,
-                 nyc_confirmed: bool = False) -> Optional[int]:
+                 nyc_confirmed: bool = False,
+                 llm_result: dict = None) -> Optional[int]:
     """
     Process a single deal from scraped content.
-    Extract structured data and insert into database.
+    LLM-first: use llm_result if available, fall back to regex extraction.
     """
     combined_text = f"{title} {full_text}"
 
-    # Check if NYC-related (skip if query already targeted NYC)
+    # ── LLM path (preferred) ──
+    if llm_result:
+        # Reject non-funding articles
+        if not llm_result.get("is_funding_deal", True):
+            logger.debug(f"LLM says not a funding deal: {title[:60]}")
+            return None
+
+        company_name = llm_result.get("company_name")
+        if company_name:
+            company_name = clean_company_name(company_name)
+        if not company_name or not validate_company_name(company_name):
+            # Fall through to regex
+            company_name = None
+
+        if company_name:
+            # NYC check: use LLM signal + text check
+            llm_nyc = llm_result.get("is_nyc")
+            if not nyc_confirmed and not llm_nyc and not is_nyc_related(combined_text):
+                return None
+
+            stage = llm_result.get("stage", "Unknown")
+            if stage not in ("Pre-Seed", "Seed", "Series A", "Series B", "Series C+", "Unknown"):
+                stage = detect_stage(combined_text)
+            amount = llm_result.get("amount")
+            if amount and not validate_deal_amount(amount, stage):
+                amount = extract_amount(full_text, title=title)
+            description = llm_result.get("description")
+            category_name = llm_result.get("sector") or detect_category(combined_text)
+
+            # Extract investors from LLM
+            llm_investors = llm_result.get("investors", [])
+            lead_inv = llm_result.get("lead_investor")
+            investors = []
+            if lead_inv:
+                investors.append({"name": lead_inv, "role": "lead"})
+            for inv in llm_investors:
+                if inv != lead_inv:
+                    investors.append({"name": inv, "role": "participant"})
+            if not investors:
+                investors = extract_investors(combined_text)
+
+            confidence = 0.85 if amount and stage != "Unknown" else 0.6
+
+            # Skip VC firms
+            skip = should_skip_deal(conn, company_name, amount)
+            if skip:
+                logger.debug(f"Skipping deal: {skip}")
+                return None
+
+            # Dedup
+            existing = conn.execute(
+                "SELECT id FROM deals WHERE company_name_normalized = ? AND stage = ?",
+                (normalize_company_name(company_name), stage)
+            ).fetchone()
+            if existing:
+                return None
+
+            cat_id = get_category_id(conn, category_name)
+
+            deal_id = insert_deal(
+                conn, company_name,
+                company_description=description,
+                stage=stage,
+                amount_usd=amount,
+                amount_disclosed=1 if amount else 0,
+                date_announced=date_announced,
+                source_url=url,
+                source_type=source_type,
+                category_id=cat_id,
+                raw_text=combined_text[:2000],
+                confidence_score=confidence,
+            )
+
+            # Link investors
+            for inv_data in investors:
+                inv_name = inv_data["name"]
+                firm_row = conn.execute(
+                    "SELECT id FROM firms WHERE LOWER(name) LIKE ?",
+                    (f"%{inv_name.lower()}%",)
+                ).fetchone()
+                if firm_row:
+                    link_deal_firm(conn, deal_id, firm_row["id"], inv_data["role"])
+                else:
+                    firm_id = upsert_firm(conn, inv_name, location="Unknown")
+                    link_deal_firm(conn, deal_id, firm_id, inv_data["role"])
+
+            return deal_id
+
+    # ── Regex fallback path ──
     if not nyc_confirmed and not is_nyc_related(combined_text):
         return None
 
-    # Extract fields
     company_name = extract_company_name(title)
-    if not company_name:
+    if company_name:
+        company_name = clean_company_name(company_name)
+    if not company_name or not validate_company_name(company_name):
         return None
 
     stage = detect_stage(combined_text)
     amount = extract_amount(full_text, title=title)
+    if not validate_deal_amount(amount, stage):
+        amount = None
     category_name = detect_category(combined_text)
     investors = extract_investors(combined_text)
 
-    # Skip VC firms and deals > $50M
     skip = should_skip_deal(conn, company_name, amount)
     if skip:
         logger.debug(f"Skipping deal: {skip}")
         return None
 
-    # Check for duplicates
     existing = conn.execute(
-        "SELECT id FROM deals WHERE company_name = ? AND stage = ?",
-        (company_name, stage)
+        "SELECT id FROM deals WHERE company_name_normalized = ? AND stage = ?",
+        (normalize_company_name(company_name), stage)
     ).fetchone()
     if existing:
         return None
 
-    # Get category ID
     cat_id = get_category_id(conn, category_name)
 
-    # Insert deal
     deal_id = insert_deal(
         conn, company_name,
         stage=stage,
@@ -574,19 +665,15 @@ def process_deal(conn, title: str, url: str, full_text: str,
         confidence_score=0.7 if amount and stage != "Unknown" else 0.4,
     )
 
-    # Link investors
     for inv_data in investors:
         inv_name = inv_data["name"]
-        # Check if this investor matches a known firm
         firm_row = conn.execute(
             "SELECT id FROM firms WHERE LOWER(name) LIKE ?",
             (f"%{inv_name.lower()}%",)
         ).fetchone()
-
         if firm_row:
             link_deal_firm(conn, deal_id, firm_row["id"], inv_data["role"])
         else:
-            # Create as new firm if it looks like a firm name
             firm_id = upsert_firm(conn, inv_name, location="Unknown")
             link_deal_firm(conn, deal_id, firm_id, inv_data["role"])
 
@@ -883,13 +970,23 @@ def run_news_scraper(days_back: int = 14):
                 full_text = desc
             enriched.append((title, url, full_text, article.get("source_type", "news_article"), date, nyc_ok))
 
+        # ── LLM batch extraction ──
+        llm_articles = [
+            {"title": title, "text": full_text}
+            for title, url, full_text, source_type, date, nyc_ok in enriched
+        ]
+        llm_results = extract_deals_batch(llm_articles) if llm_articles else {}
+        logger.info(f"LLM extracted {sum(1 for v in llm_results.values() if v)}/{len(llm_articles)} articles")
+
         # Batch insert deals (DB only, no HTTP)
         with batch_connection() as conn:
             for title, url, full_text, source_type, date, nyc_ok in enriched:
                 try:
+                    llm_result = llm_results.get(title)
                     deal_id = process_deal(conn, title, url, full_text,
                                            source_type=source_type, date_announced=date,
-                                           nyc_confirmed=nyc_ok)
+                                           nyc_confirmed=nyc_ok,
+                                           llm_result=llm_result)
                     if deal_id:
                         total_new += 1
                 except Exception as e:

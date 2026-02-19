@@ -1,0 +1,275 @@
+"""
+LLM-powered deal extraction using Claude Haiku.
+Extracts structured deal data from article text with graceful fallback
+when ANTHROPIC_API_KEY is not set.
+"""
+
+import os
+import re
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional, List, Dict
+
+logger = logging.getLogger(__name__)
+
+_client = None
+_client_checked = False
+
+MODEL = "claude-haiku-4-5-20251001"
+
+
+def _get_client():
+    """Lazy-init Anthropic client. Returns None if API key not set."""
+    global _client, _client_checked
+    if _client_checked:
+        return _client
+    _client_checked = True
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        logger.info("ANTHROPIC_API_KEY not set — LLM extraction disabled")
+        return None
+    try:
+        from anthropic import Anthropic
+        _client = Anthropic(api_key=api_key)
+        logger.info("Anthropic client initialized (model: %s)", MODEL)
+        return _client
+    except ImportError:
+        logger.warning("anthropic package not installed — LLM extraction disabled")
+        return None
+    except Exception as e:
+        logger.warning("Failed to init Anthropic client: %s", e)
+        return None
+
+
+EXTRACTION_PROMPT = """\
+You are a financial data extraction assistant. Given a news article title and text about a startup funding round, extract structured deal information.
+
+Return ONLY a JSON object with these fields (use null for unknown values):
+{
+  "company_name": "Clean company name only (e.g. 'Acme' not 'Acme, an AI startup')",
+  "description": "One sentence describing what the company does",
+  "amount": null or number in USD (e.g. 5000000 for $5M),
+  "stage": "Pre-Seed" | "Seed" | "Series A" | "Series B" | "Series C+" | "Unknown",
+  "investors": ["Investor Name 1", "Investor Name 2"],
+  "lead_investor": "Lead investor name" or null,
+  "sector": "Fintech" | "Health & Biotech" | "AI / Machine Learning" | "SaaS / Enterprise" | "Cybersecurity" | "Consumer / D2C" | "Web3 / Crypto" | "Real Estate / Proptech" | "Climate / Cleantech" | "Developer Tools" | "HR / Future of Work" | "Food & Agriculture" | "Marketplace" | "Legal Tech" | "Logistics / Supply Chain" | "Education / Edtech" | "Insurance / Insurtech" | "Media & Entertainment" | "Other",
+  "is_nyc": true | false | null,
+  "is_funding_deal": true | false
+}
+
+Rules:
+- company_name should be JUST the company name, not a description
+- is_funding_deal should be false for articles about layoffs, acquisitions, IPOs, market analysis, etc.
+- amount should be a raw number in USD (5000000 not "5M")
+- Only set is_nyc to true if there's clear evidence the company is NYC-based
+- For investors, include both lead and participating investors"""
+
+
+def extract_deal_from_text(title: str, text: str) -> Optional[Dict]:
+    """
+    Send article to Claude Haiku and return structured JSON.
+    Returns None if API key not set or extraction fails.
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    # Truncate text to avoid excessive token usage
+    truncated = text[:4000] if len(text) > 4000 else text
+    user_msg = f"Title: {title}\n\nArticle text:\n{truncated}"
+
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=500,
+            messages=[
+                {"role": "user", "content": user_msg}
+            ],
+            system=EXTRACTION_PROMPT,
+        )
+        raw = response.content[0].text.strip()
+
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+        result = json.loads(raw)
+        return result
+
+    except json.JSONDecodeError as e:
+        logger.debug("LLM returned invalid JSON for '%s': %s", title[:60], e)
+        return None
+    except Exception as e:
+        logger.warning("LLM extraction failed for '%s': %s", title[:60], e)
+        return None
+
+
+BATCH_PROMPT = """\
+You are a financial data extraction assistant. Given an AlleyWatch daily funding report (which contains multiple deal announcements), extract ALL deals from the text.
+
+Return ONLY a JSON array of objects, one per deal:
+[
+  {
+    "company_name": "Clean company name",
+    "description": "What the company does (one sentence)",
+    "amount": null or number in USD,
+    "stage": "Pre-Seed" | "Seed" | "Series A" | "Series B" | "Series C+" | "Unknown",
+    "investors": ["Investor 1", "Investor 2"],
+    "lead_investor": "Lead investor" or null,
+    "sector": "Fintech" | "Health & Biotech" | "AI / Machine Learning" | "SaaS / Enterprise" | "Cybersecurity" | "Consumer / D2C" | "Web3 / Crypto" | "Real Estate / Proptech" | "Climate / Cleantech" | "Developer Tools" | "HR / Future of Work" | "Food & Agriculture" | "Marketplace" | "Legal Tech" | "Logistics / Supply Chain" | "Education / Edtech" | "Insurance / Insurtech" | "Media & Entertainment" | "Other"
+  }
+]
+
+Rules:
+- Extract EVERY deal mentioned in the report
+- company_name should be JUST the company name
+- amount should be a raw number in USD
+- Include all investors mentioned for each deal"""
+
+
+def extract_deals_batch(articles: List[Dict], max_workers: int = 5) -> Dict[str, Optional[Dict]]:
+    """
+    Extract deals from multiple articles in parallel.
+    articles: list of dicts with 'title' and 'text' keys.
+    Returns: dict mapping title -> extraction result (or None).
+    """
+    client = _get_client()
+    if not client:
+        return {}
+
+    results = {}
+
+    def _extract(article):
+        title = article.get("title", "")
+        text = article.get("text", "")
+        return title, extract_deal_from_text(title, text)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_extract, a): a for a in articles}
+        for future in as_completed(futures):
+            try:
+                title, result = future.result()
+                results[title] = result
+            except Exception as e:
+                article = futures[future]
+                logger.debug("Batch extraction failed for '%s': %s",
+                             article.get("title", "")[:60], e)
+                results[article.get("title", "")] = None
+
+    logger.info("LLM batch extraction: %d/%d succeeded",
+                sum(1 for v in results.values() if v), len(articles))
+    return results
+
+
+def extract_alleywatch_deals(page_text: str) -> Optional[List[Dict]]:
+    """
+    Send an AlleyWatch daily report page to Haiku and extract all deals.
+    Returns list of deal dicts or None.
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    truncated = page_text[:8000] if len(page_text) > 8000 else page_text
+
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=2000,
+            messages=[
+                {"role": "user", "content": f"AlleyWatch funding report:\n\n{truncated}"}
+            ],
+            system=BATCH_PROMPT,
+        )
+        raw = response.content[0].text.strip()
+
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+        deals = json.loads(raw)
+        if isinstance(deals, list):
+            return deals
+        return None
+
+    except json.JSONDecodeError as e:
+        logger.debug("LLM returned invalid JSON for AlleyWatch page: %s", e)
+        return None
+    except Exception as e:
+        logger.warning("LLM AlleyWatch extraction failed: %s", e)
+        return None
+
+
+# ── Company Name Validation & Cleaning ─────────────────────────
+
+_VERB_PATTERNS = re.compile(
+    r"\b(started|announced|reported|said|told|according|launched|"
+    r"plans|planning|expected|looking|seeking|trying|working|"
+    r"becomes|turned|moved|expanded|joined|hired|fired|laid off)\b",
+    re.I
+)
+
+_HEADLINE_PATTERNS = re.compile(
+    r"(^the\s|^a\s|^an\s|exclusive:|breaking:|report:|"
+    r"update:|analysis:|why\s|how\s|what\s|when\s|who\s|where\s)",
+    re.I
+)
+
+
+def validate_company_name(name: str) -> bool:
+    """
+    Return True if name looks like a valid company name.
+    Rejects names >60 chars, containing verbs, or headline patterns.
+    """
+    if not name or len(name) > 60:
+        return False
+    if _VERB_PATTERNS.search(name):
+        return False
+    if _HEADLINE_PATTERNS.search(name):
+        return False
+    # Reject if it's mostly lowercase words (likely a sentence fragment)
+    words = name.split()
+    if len(words) > 3:
+        lowercase_count = sum(1 for w in words if w[0].islower())
+        if lowercase_count > len(words) * 0.6:
+            return False
+    return True
+
+
+def clean_company_name(name: str) -> str:
+    """
+    Clean up a company name extracted from a headline.
+    'Bedrock, an A.I. Start-Up for Construction,' -> 'Bedrock'
+    'AI Startup Acme' -> 'Acme'
+    """
+    if not name:
+        return name
+
+    # Strip trailing comma and whitespace
+    name = name.strip().rstrip(",").strip()
+
+    # Remove "a/an ... startup/company" suffix
+    name = re.sub(
+        r",?\s+(?:a|an)\s+.+?(?:startup|start-up|company|firm|platform|maker|provider).*$",
+        "", name, flags=re.I
+    ).strip()
+
+    # Remove leading qualifiers
+    name = re.sub(
+        r"^(?:AI|A\.I\.|fintech|healthtech|biotech|edtech|proptech|"
+        r"cybersecurity|saas|crypto|web3)\s+(?:startup|start-up|company|firm)\s+",
+        "", name, flags=re.I
+    ).strip()
+
+    # Remove "NYC-based" / "New York-based" prefix
+    name = re.sub(
+        r"^(?:nyc|new\s+york|ny|manhattan|brooklyn)[\-\s]+based\s+",
+        "", name, flags=re.I
+    ).strip()
+
+    # Strip quotes
+    name = name.strip("'\"''""\u201c\u201d ")
+
+    return name

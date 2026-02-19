@@ -259,6 +259,34 @@ def should_skip_deal(conn, company_name: str, amount: float = None) -> str:
 
 # ── Investor parsing ──────────────────────────────────────────
 
+def validate_deal_amount(amount: Optional[float], stage: str = "Unknown") -> bool:
+    """
+    Stage-aware validation: reject amounts that are implausible for the given stage.
+    Returns True if the amount is plausible, False if it should be rejected.
+    """
+    if amount is None:
+        return True  # undisclosed is always OK
+
+    if amount <= 0:
+        return False
+
+    # Global cap — $10B is unreasonable for any early-stage deal
+    if amount > 10_000_000_000:
+        return False
+
+    # Stage-specific caps
+    caps = {
+        "Pre-Seed": 5_000_000,       # $5M
+        "Seed": 25_000_000,           # $25M
+        "Series A": 100_000_000,      # $100M
+        "Series B": 500_000_000,      # $500M
+        "Series C+": 5_000_000_000,   # $5B
+        "Unknown": 500_000_000,       # $500M default
+    }
+    cap = caps.get(stage, 500_000_000)
+    return amount <= cap
+
+
 def parse_investors(text: str) -> Tuple[List[str], Optional[str]]:
     """
     Parse an investor string.
