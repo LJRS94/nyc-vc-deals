@@ -36,7 +36,7 @@ DE_STATE_CODE = "DE"
 RELEVANT_STATE_CODES = ["NY", "DE"]
 
 
-def search_form_d_filings(days_back: int = 14) -> List[Dict]:
+def search_form_d_filings(days_back: int = 180) -> List[Dict]:
     """
     Search EDGAR FULL-TEXT search API for recent Form D filings
     from New York-based companies.
@@ -88,6 +88,7 @@ def search_form_d_filings(days_back: int = 14) -> List[Dict]:
         params = {
             "q": "New York venture capital",
             "forms": "D",
+            "State": "NY",
             "dateRange": "custom",
             "startdt": start_date,
             "enddt": end_date,
@@ -216,7 +217,7 @@ def search_edgar_fulltext(query: str, days_back: int = 14) -> List[Dict]:
         "startdt": start_date,
         "enddt": end_date,
         "from": 0,
-        "size": 40,
+        "size": 100,
     }
 
     try:
@@ -240,7 +241,7 @@ def search_edgar_fulltext(query: str, days_back: int = 14) -> List[Dict]:
 # classify_stage_from_amount imported from scrapers.utils
 
 
-def run_sec_scraper(days_back: int = 14):
+def run_sec_scraper(days_back: int = 180):
     """Main entry point for SEC EDGAR scraping."""
     conn = get_connection()
     log_id = log_scrape(conn, "sec_edgar")

@@ -375,6 +375,19 @@ GOOGLE_NEWS_QUERIES = [
     "NYC startup funding raised",
     "New York startup Series seed venture",
     "New York City startup raises million",
+    # LinkedIn — where 60% of seed deals are exclusively announced
+    'site:linkedin.com "raised" "seed" NYC startup',
+    'site:linkedin.com "raised" "million" "New York" startup',
+    'site:linkedin.com "pre-seed" OR "seed round" NYC',
+    'site:linkedin.com "series a" "New York" raised',
+    # Crunchbase News
+    "site:news.crunchbase.com New York funding",
+    "site:news.crunchbase.com NYC raised seed series",
+    # Borough-specific and extra
+    "NYC startup closes seed round",
+    "New York startup pre-seed funding",
+    "Brooklyn startup raised million",
+    "Manhattan startup funding announcement",
 ]
 
 def scrape_google_news_deals(days_back: int = 14) -> List[Dict]:

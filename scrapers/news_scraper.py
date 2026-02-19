@@ -106,9 +106,15 @@ FUNDING_KEYWORDS = [
 PUBLICATION_FEEDS = [
     ("TechCrunch Venture", "https://techcrunch.com/category/venture/feed/"),
     ("TechCrunch Funding", "https://techcrunch.com/tag/funding/feed/"),
+    ("TechCrunch Startups", "https://techcrunch.com/category/startups/feed/"),
     ("VentureBeat Business", "https://venturebeat.com/category/business/feed/"),
     ("Crunchbase News", "https://news.crunchbase.com/feed/"),
     ("Fortune Venture", "https://fortune.com/feed/fortune-feeds/venture/"),
+    ("Fortune Term Sheet", "https://fortune.com/feed/fortune-feeds/?id=3230629"),
+    ("BuiltInNYC", "https://www.builtinnyc.com/feed"),
+    ("Technical.ly NYC", "https://technical.ly/new-york/feed/"),
+    ("PitchBook News", "https://pitchbook.com/news/feed"),
+    ("Business Insider", "https://www.businessinsider.com/sai/rss"),
 ]
 
 
@@ -657,7 +663,120 @@ def _generate_diverse_queries() -> List[str]:
         queries.append(f"site:{site} NYC startup raises")
         queries.append(f'site:{site} "New York" startup funding')
 
+    # LinkedIn funding announcements (founders post "raised" on LinkedIn)
+    queries.extend([
+        'site:linkedin.com "raised" "seed" NYC startup',
+        'site:linkedin.com "raised" "million" "New York" startup',
+        'site:linkedin.com "pre-seed" OR "seed round" NYC',
+        'site:linkedin.com "series a" "New York" raised',
+        'site:linkedin.com "excited to announce" raised NYC',
+    ])
+
     return queries
+
+
+def scrape_builtin_recently_funded() -> List[Dict]:
+    """Scrape BuiltInNYC's curated recently-funded startups list."""
+    results = []
+    url = "https://www.builtinnyc.com/companies/recently-funded-nyc"
+
+    try:
+        resp = fetch(url, timeout=20, ttl=NEWS_TTL)
+        if resp.status_code != 200:
+            logger.warning(f"BuiltInNYC returned {resp.status_code}")
+            return results
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Company cards on the listing page
+        cards = (
+            soup.select("div[class*='company-card']") or
+            soup.select("div[class*='company']") or
+            soup.select("article") or
+            soup.select("div[class*='result']")
+        )
+
+        for card in cards:
+            name_el = card.select_one("h2, h3, h4, [class*='name'], [class*='title']")
+            name = name_el.get_text(strip=True) if name_el else ""
+            if not name:
+                continue
+
+            link_el = card.find("a", href=True)
+            href = ""
+            if link_el:
+                href = link_el.get("href", "")
+                if href.startswith("/"):
+                    href = "https://www.builtinnyc.com" + href
+
+            text = card.get_text(separator=" ", strip=True)
+
+            results.append({
+                "title": f"{name} raises funding",
+                "url": href,
+                "description": text[:500],
+                "source_type": "news_article",
+                "nyc_confirmed": True,
+            })
+
+        logger.info(f"BuiltInNYC: found {len(results)} recently funded companies")
+
+    except Exception as e:
+        logger.warning(f"BuiltInNYC scrape failed: {e}")
+
+    return results
+
+
+def scrape_crunchbase_news_nyc() -> List[Dict]:
+    """Scrape Crunchbase News NYC tag pages for funding articles."""
+    results = []
+    pages = [
+        "https://news.crunchbase.com/tag/new-york/",
+        "https://news.crunchbase.com/tag/new-york/page/2/",
+        "https://news.crunchbase.com/tag/new-york/page/3/",
+    ]
+
+    for page_url in pages:
+        try:
+            resp = fetch(page_url, timeout=15, ttl=NEWS_TTL)
+            if resp.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            articles = (
+                soup.select("article") or
+                soup.select("div[class*='post']") or
+                soup.select("div[class*='article']")
+            )
+
+            for article in articles:
+                title_el = article.select_one("h2 a, h3 a, h2, h3")
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True)
+
+                link_el = article.find("a", href=True)
+                href = link_el.get("href", "") if link_el else ""
+
+                desc_el = article.select_one("p, [class*='excerpt'], [class*='summary']")
+                desc = desc_el.get_text(strip=True) if desc_el else ""
+
+                full_text = f"{title} {desc}"
+                if any(kw in full_text.lower() for kw in FUNDING_KEYWORDS):
+                    results.append({
+                        "title": title,
+                        "url": href,
+                        "description": desc,
+                        "source_type": "news_article",
+                        "nyc_confirmed": True,
+                    })
+
+            logger.info(f"Crunchbase News NYC: found {len(results)} articles from {page_url}")
+
+        except Exception as e:
+            logger.warning(f"Crunchbase News NYC scrape failed: {e}")
+
+    return results
 
 
 def run_news_scraper(days_back: int = 14):
@@ -733,6 +852,16 @@ def run_news_scraper(days_back: int = 14):
         logger.info("Scraping Crunchbase recent rounds...")
         cb_articles = scrape_crunchbase_recent()
         all_articles.extend(cb_articles)
+
+        # BuiltInNYC recently funded
+        logger.info("Scraping BuiltInNYC recently funded...")
+        builtin_articles = scrape_builtin_recently_funded()
+        all_articles.extend(builtin_articles)
+
+        # Crunchbase News NYC tag
+        logger.info("Scraping Crunchbase News NYC...")
+        cb_news_articles = scrape_crunchbase_news_nyc()
+        all_articles.extend(cb_news_articles)
 
         # Deduplicate by URL before processing
         seen_urls = set()
