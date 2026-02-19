@@ -285,7 +285,7 @@
                         <div><div className="kpi-label" style={{marginBottom:5}}>Financials</div>
                           <div style={{display:"grid",gridTemplateColumns:"80px 1fr",gap:"3px 10px"}}>
                             <span className="muted">Raised</span><span className="mono green">{d.amount_usd?`$${(d.amount_usd/1e6).toFixed(2)}M`:"—"}</span>
-                            {d.total_raised && <><span className="muted">Lifetime</span><span className="mono" style={{color:"#888"}}>{$(d.total_raised)}</span></>}
+                            {d.total_raised && <React.Fragment><span className="muted">Lifetime</span><span className="mono" style={{color:"#888"}}>{$(d.total_raised)}</span></React.Fragment>}
                             <span className="muted">Source</span><span>{SRCS[d.source_type]||d.source_type}</span>
                           </div></div>
                       </div></td></tr>}
@@ -414,13 +414,13 @@
                       {[{l:"Deals",v:c.cnt,c:"#eee"},{l:"Capital",v:$(c.cap),c:"#34d399"},{l:"Avg Size",v:$(c.avg),c:"#f59e0b"},{l:"Investors",v:cfl.length,c:"#a78bfa"}].map(k=>
                         <div key={k.l} className="kpi"><div className="kpi-label">{k.l}</div><div className="kpi-val mono" style={{color:k.c}}>{k.v}</div></div>)}
                     </div>
-                    {cfl.length>0 && <><div className="kpi-label" style={{marginBottom:6}}>Active Investors</div>
+                    {cfl.length>0 && <React.Fragment><div className="kpi-label" style={{marginBottom:6}}>Active Investors</div>
                       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:6,marginBottom:16}}>
                         {cfl.map(f=><div key={f.name} className="investor-card" onClick={()=>goFirm(f.name)}>
                           <div><div style={{fontSize:11.5,fontWeight:600,color:"#ddd"}}>{f.name}</div>
                             <div style={{fontSize:9.5,color:"#555",marginTop:1}}>{f.cnt} deals · {f.leads} leads</div></div>
                           <div className="mono green" style={{fontSize:11,fontWeight:700}}>{$(f.cap)}</div>
-                        </div>)}</div></>}
+                        </div>)}</div></React.Fragment>}
                     <div className="kpi-label" style={{marginBottom:6}}>All {c.cat} Deals</div>
                     <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
                       {["Company","Amount","Stage","Lead Investor","Date"].map(h=>
@@ -471,7 +471,7 @@
                     ? filtered
                     : filtered;
                   const firmName = selPortFirm ? (portfolio.firms.find(f=>f.id===selPortFirm)||{}).name : null;
-                  return <>
+                  return <React.Fragment>
                     {firmName && <div style={{padding:"12px 20px",borderBottom:"1px solid #191a2e",background:"#0e0f18"}}>
                       <div style={{fontSize:16,fontWeight:700,color:"#eee"}}>{firmName}</div>
                       <div style={{fontSize:11,color:"#555",marginTop:2}}>{searchFiltered.length} portfolio companies</div>
@@ -508,7 +508,7 @@
                         ? <div>No portfolio data yet — scraper runs on Fridays at 9 PM EST</div>
                         : <div>No companies match — <button className="link" onClick={()=>{setSelPortFirm(null);setQ("");}}>clear filters</button></div>}
                     </div>}
-                  </>;
+                  </React.Fragment>;
                 })()}
               </div>
             </div>}
