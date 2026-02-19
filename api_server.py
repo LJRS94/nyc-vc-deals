@@ -685,20 +685,35 @@ def _run_scrape_background():
 
 
 def _start_scheduler():
-    """Start a background thread that runs scrapes every 2 hours."""
+    """Start a background thread that scrapes on startup + every Sunday at 9 PM EST."""
     import time
 
     def scheduler_loop():
-        # Wait 60s after startup before first scrape
+        # Run once on startup after 60s delay
         time.sleep(60)
+        _run_scrape_background()
+
+        # Then wait for Sunday 9 PM EST each week
         while True:
+            now = datetime.utcnow()
+            # Sunday = 6, 9 PM EST = 02:00 UTC (next day, Monday)
+            # So we target Monday 02:00 UTC = Sunday 9 PM EST
+            days_until_monday = (7 - now.weekday()) % 7
+            if days_until_monday == 0 and now.hour >= 2:
+                days_until_monday = 7  # already past this week's window
+            next_run = now.replace(hour=2, minute=0, second=0, microsecond=0)
+            next_run = next_run + timedelta(days=days_until_monday)
+            wait_seconds = (next_run - now).total_seconds()
+            if wait_seconds < 0:
+                wait_seconds += 7 * 24 * 3600
+            logger.info(f"Next scrape scheduled in {wait_seconds/3600:.1f} hours "
+                        f"(Sunday 9 PM EST / Monday 02:00 UTC)")
+            time.sleep(wait_seconds)
             _run_scrape_background()
-            # Sleep 2 hours between scrapes
-            time.sleep(2 * 60 * 60)
 
     t = threading.Thread(target=scheduler_loop, daemon=True)
     t.start()
-    logger.info("Background scraper scheduled: every 2 hours")
+    logger.info("Background scraper scheduled: startup + every Sunday 9 PM EST")
 
 
 @app.route("/api/scrape", methods=["POST"])
