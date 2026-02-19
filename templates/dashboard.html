@@ -79,6 +79,7 @@
       const [view, setView] = useState("grid");
       const [selPortFirm, setSelPortFirm] = useState(null);
       const [q, setQ] = useState("");
+      const [qBuf, setQBuf] = useState("");
       const [stgF, setStgF] = useState("All");
       const [catF, setCatF] = useState("All");
       const [sort, setSort] = useState({f:"amount_usd",d:"desc"});
@@ -109,6 +110,12 @@
           setLoading(false);
         });
       }, []);
+
+      /* Debounce search input */
+      useEffect(() => {
+        const t = setTimeout(() => setQ(qBuf), 200);
+        return () => clearTimeout(t);
+      }, [qBuf]);
 
       /* / key focuses search */
       useEffect(() => {
@@ -180,7 +187,7 @@
 
       const totCap = rows.reduce((s,d) => s+(d.amount_usd||0), 0);
       const activeF = [stgF!=="All"&&stgF, catF!=="All"&&catF, selFirm, q].filter(Boolean);
-      const clearAll = () => { setStgF("All");setCatF("All");setSelFirm(null);setSelCat(null);setQ(""); };
+      const clearAll = () => { setStgF("All");setCatF("All");setSelFirm(null);setSelCat(null);setQ("");setQBuf(""); };
       const goFirm = n => { setSelFirm(n); setView("firms"); };
 
       function SH({children, field, align}) {
@@ -199,11 +206,11 @@
               NYC·VC <span style={{fontWeight:400,fontSize:11,color:"#444",marginLeft:6}}>Live Dashboard</span>
             </div>
             <div style={{flex:1,maxWidth:400,position:"relative"}}>
-              <input ref={inpRef} value={q} onChange={e=>setQ(e.target.value)}
+              <input ref={inpRef} value={qBuf} onChange={e=>setQBuf(e.target.value)}
                 placeholder='Search everything… ( / )'
                 style={{width:"100%",padding:"6px 10px 6px 28px",borderRadius:4,border:"1px solid #191a2e",background:"#101118",color:"#ddd",fontSize:12.5,outline:"none"}} />
               <span style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",color:"#33344a",fontSize:13}}>⌕</span>
-              {q && <button onClick={()=>setQ("")} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",color:"#555",fontSize:12}}>✕</button>}
+              {qBuf && <button onClick={()=>{setQBuf("");setQ("");}} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",color:"#555",fontSize:12}}>✕</button>}
             </div>
             <div style={{display:"flex",gap:1,background:"#141520",borderRadius:5,padding:2}}>
               {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"portfolio",l:"◈ Portfolio"}].map(t=>
@@ -467,14 +474,11 @@
                   const filtered = selPortFirm
                     ? portfolio.companies.filter(c => c.firm_id === selPortFirm)
                     : portfolio.companies.filter(c => !q || (c.company_name||"").toLowerCase().includes(q.toLowerCase()) || (c.firm_name||"").toLowerCase().includes(q.toLowerCase()));
-                  const searchFiltered = q && !selPortFirm
-                    ? filtered
-                    : filtered;
                   const firmName = selPortFirm ? (portfolio.firms.find(f=>f.id===selPortFirm)||{}).name : null;
                   return <React.Fragment>
                     {firmName && <div style={{padding:"12px 20px",borderBottom:"1px solid #191a2e",background:"#0e0f18"}}>
                       <div style={{fontSize:16,fontWeight:700,color:"#eee"}}>{firmName}</div>
-                      <div style={{fontSize:11,color:"#555",marginTop:2}}>{searchFiltered.length} portfolio companies</div>
+                      <div style={{fontSize:11,color:"#555",marginTop:2}}>{filtered.length} portfolio companies</div>
                     </div>}
                     <table style={{fontSize:12}}>
                       <thead><tr>
@@ -485,7 +489,7 @@
                         <th style={{cursor:"default"}}>Website</th>
                       </tr></thead>
                       <tbody>
-                        {searchFiltered.map((c, i) =>
+                        {filtered.map((c, i) =>
                           <tr key={c.id || i} className={i % 2 === 0 ? "stripe" : ""}>
                             <td><div style={{fontWeight:600,color:"#eee"}}>{c.company_name}</div>
                               {c.description && <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,maxWidth:300,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.description}</div>}
@@ -503,10 +507,10 @@
                         )}
                       </tbody>
                     </table>
-                    {searchFiltered.length === 0 && <div className="empty" style={{padding:60}}>
+                    {filtered.length === 0 && <div className="empty" style={{padding:60}}>
                       {portfolio.total === 0
                         ? <div>No portfolio data yet — scraper runs on Fridays at 9 PM EST</div>
-                        : <div>No companies match — <button className="link" onClick={()=>{setSelPortFirm(null);setQ("");}}>clear filters</button></div>}
+                        : <div>No companies match — <button className="link" onClick={()=>{setSelPortFirm(null);setQ("");setQBuf("");}}>clear filters</button></div>}
                     </div>}
                   </React.Fragment>;
                 })()}

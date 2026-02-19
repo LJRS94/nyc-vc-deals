@@ -127,24 +127,32 @@ def get_deals():
     """
     rows = conn.execute(data_sql, params + [per_page, offset]).fetchall()
 
-    deals = []
-    for row in rows:
-        deal_id = row["id"]
-
-        firms_rows = conn.execute("""
-            SELECT f.name, f.website, df.role
+    # Batch-fetch firms and investors for all deals (avoids N+1 queries)
+    deal_ids = [row["id"] for row in rows]
+    firms_by_deal = {}
+    investors_by_deal = {}
+    if deal_ids:
+        ph = ",".join(["?"] * len(deal_ids))
+        for fr in conn.execute(f"""
+            SELECT df.deal_id, f.name, f.website, df.role
             FROM deal_firms df JOIN firms f ON df.firm_id = f.id
-            WHERE df.deal_id = ?
-        """, (deal_id,)).fetchall()
-
-        investors_rows = conn.execute("""
-            SELECT i.name, i.title, f.name as firm_name
+            WHERE df.deal_id IN ({ph})
+        """, deal_ids).fetchall():
+            firms_by_deal.setdefault(fr["deal_id"], []).append(
+                {"name": fr["name"], "website": fr["website"], "role": fr["role"]})
+        for ir in conn.execute(f"""
+            SELECT di.deal_id, i.name, i.title, f.name as firm_name
             FROM deal_investors di
             JOIN investors i ON di.investor_id = i.id
             LEFT JOIN firms f ON i.firm_id = f.id
-            WHERE di.deal_id = ?
-        """, (deal_id,)).fetchall()
+            WHERE di.deal_id IN ({ph})
+        """, deal_ids).fetchall():
+            investors_by_deal.setdefault(ir["deal_id"], []).append(
+                {"name": ir["name"], "title": ir["title"], "firm": ir["firm_name"]})
 
+    deals = []
+    for row in rows:
+        deal_id = row["id"]
         deals.append({
             "id": deal_id,
             "company_name": row["company_name"],
@@ -158,8 +166,8 @@ def get_deals():
             "source_type": row["source_type"],
             "source_url": row["source_url"],
             "confidence_score": row["confidence_score"],
-            "firms": [{"name": f["name"], "website": f["website"], "role": f["role"]} for f in firms_rows],
-            "investors": [{"name": i["name"], "title": i["title"], "firm": i["firm_name"]} for i in investors_rows],
+            "firms": firms_by_deal.get(deal_id, []),
+            "investors": investors_by_deal.get(deal_id, []),
         })
 
     conn.close()
@@ -712,7 +720,7 @@ def _run_scrape_background():
         from scrapers.news_scraper import run_news_scraper
         from scrapers.alleywatch_scraper import run_alleywatch_scraper
         from scrapers.firm_scraper import seed_firms
-        from scrapers.utils import clear_firm_cache, is_vc_firm
+        from scrapers.utils import clear_firm_cache
 
         # Seed firms (including firms.json with 100 firms)
         try:
@@ -721,18 +729,24 @@ def _run_scrape_background():
         except Exception as e:
             logger.warning(f"Firm seeding warning: {e}")
 
-        # Clean up VC firms mistakenly listed as startups
+        # Clean up VC firms mistakenly listed as startups (single SQL using firm names)
         conn = get_connection()
         try:
-            all_deals = conn.execute("SELECT id, company_name FROM deals").fetchall()
-            vc_ids = [d["id"] for d in all_deals if is_vc_firm(conn, d["company_name"])]
-            for did in vc_ids:
-                conn.execute("DELETE FROM deal_firms WHERE deal_id = ?", (did,))
-                conn.execute("DELETE FROM deal_investors WHERE deal_id = ?", (did,))
-                conn.execute("DELETE FROM deals WHERE id = ?", (did,))
-            conn.commit()
-            if vc_ids:
-                logger.info(f"Cleanup: removed {len(vc_ids)} VC-firm deals")
+            firm_names = [r["name"] for r in conn.execute("SELECT name FROM firms").fetchall()]
+            if firm_names:
+                from database import _normalize_name
+                normalized = [_normalize_name(n) for n in firm_names]
+                ph = ",".join(["?"] * len(normalized))
+                vc_ids = [r[0] for r in conn.execute(
+                    f"SELECT id FROM deals WHERE company_name_normalized IN ({ph})", normalized
+                ).fetchall()]
+                if vc_ids:
+                    id_ph = ",".join(["?"] * len(vc_ids))
+                    conn.execute(f"DELETE FROM deal_firms WHERE deal_id IN ({id_ph})", vc_ids)
+                    conn.execute(f"DELETE FROM deal_investors WHERE deal_id IN ({id_ph})", vc_ids)
+                    conn.execute(f"DELETE FROM deals WHERE id IN ({id_ph})", vc_ids)
+                    conn.commit()
+                    logger.info(f"Cleanup: removed {len(vc_ids)} VC-firm deals")
         except Exception as e:
             logger.warning(f"Cleanup warning: {e}")
         finally:

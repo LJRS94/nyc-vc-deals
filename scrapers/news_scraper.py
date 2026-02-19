@@ -822,44 +822,11 @@ def run_news_scraper(days_back: int = 14):
             for a in articles:
                 a["nyc_confirmed"] = True
             all_articles.extend(articles)
-            time.sleep(0.5)
+            time.sleep(0.1)  # light touch — Bing doesn't rate-limit aggressively
         logger.info(f"Bing News: collected {len(all_articles)} articles")
 
-        # ── Google News RSS — month by month (supplement, with rate protection) ──
-        google_queries = _generate_google_queries(months_back)
-        logger.info(f"Google News: {len(google_queries)} monthly queries")
-        consecutive_fails = 0
-        google_count = 0
-        for i, query in enumerate(google_queries):
-            if consecutive_fails >= 3:
-                logger.warning(f"Google News rate-limited, stopping after {i}/{len(google_queries)} queries")
-                break
-            articles = scrape_google_news(query, max_results=20)
-            if not articles:
-                consecutive_fails += 1
-            else:
-                consecutive_fails = 0
-                for a in articles:
-                    a["nyc_confirmed"] = True
-                all_articles.extend(articles)
-                google_count += len(articles)
-            delay = 2.0 + (consecutive_fails * 3.0)
-            time.sleep(delay)
-        logger.info(f"Google News: collected {google_count} articles")
-
-        # ── Google Custom Search API (if configured) ──
-        if GOOGLE_CSE_API_KEY:
-            cse_queries = _generate_diverse_queries()[:20]  # limit to 20 queries (API quota)
-            logger.info(f"Google CSE: running {len(cse_queries)} queries")
-            cse_count = 0
-            for query in cse_queries:
-                articles = scrape_google_cse(query, max_results=10)
-                for a in articles:
-                    a["nyc_confirmed"] = True
-                all_articles.extend(articles)
-                cse_count += len(articles)
-                time.sleep(0.5)
-            logger.info(f"Google CSE: collected {cse_count} articles")
+        # Google News RSS disabled — consistently returns 503. Bing covers same ground.
+        # Google CSE disabled — same rate-limit issues.
 
         # PR Newswire
         pr_articles = scrape_prnewswire(max_pages=2)
@@ -899,15 +866,21 @@ def run_news_scraper(days_back: int = 14):
         total_found = len(unique_articles)
         logger.info(f"Found {len(all_articles)} raw articles, {total_found} unique after dedup")
 
-        # Pre-fetch all article details (HTTP only, no DB)
+        # Enrich articles — only fetch full HTML if RSS description is thin
         enriched = []
         for article in unique_articles:
             url = article.get("url", "")
             title = article.get("title", "")
             date = _parse_pub_date(article.get("date", ""))
             nyc_ok = article.get("nyc_confirmed", False)
-            details = fetch_article_details(url) if url else {}
-            full_text = details.get("text", article.get("description", ""))
+            desc = article.get("description", "")
+            if len(desc) >= 100:
+                full_text = desc  # RSS already has enough text
+            elif url:
+                details = fetch_article_details(url)
+                full_text = details.get("text", desc)
+            else:
+                full_text = desc
             enriched.append((title, url, full_text, article.get("source_type", "news_article"), date, nyc_ok))
 
         # Batch insert deals (DB only, no HTTP)

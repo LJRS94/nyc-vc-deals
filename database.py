@@ -142,6 +142,7 @@ def init_db(db_path: str = DB_PATH):
     CREATE INDEX IF NOT EXISTS idx_deals_date ON deals(date_announced);
     CREATE INDEX IF NOT EXISTS idx_deals_company ON deals(company_name);
     CREATE INDEX IF NOT EXISTS idx_deals_normalized ON deals(company_name_normalized);
+    CREATE INDEX IF NOT EXISTS idx_deals_source_type ON deals(source_type);
 
     -- Many-to-many: deals <-> firms (multiple firms per deal)
     CREATE TABLE IF NOT EXISTS deal_firms (
@@ -152,6 +153,7 @@ def init_db(db_path: str = DB_PATH):
         FOREIGN KEY (deal_id) REFERENCES deals(id),
         FOREIGN KEY (firm_id) REFERENCES firms(id)
     );
+    CREATE INDEX IF NOT EXISTS idx_deal_firms_firm ON deal_firms(firm_id);
 
     -- Many-to-many: deals <-> investors
     CREATE TABLE IF NOT EXISTS deal_investors (
@@ -161,6 +163,7 @@ def init_db(db_path: str = DB_PATH):
         FOREIGN KEY (deal_id) REFERENCES deals(id),
         FOREIGN KEY (investor_id) REFERENCES investors(id)
     );
+    CREATE INDEX IF NOT EXISTS idx_deal_investors_investor ON deal_investors(investor_id);
 
     -- Deal metadata (key-value pairs for extensible deal attributes)
     CREATE TABLE IF NOT EXISTS deal_metadata (
@@ -249,7 +252,7 @@ def batch_connection(db_path: str = DB_PATH):
         raise
     finally:
         _BATCH_CONNS.discard(id(conn))
-        conn.close()
+        # Don't close — thread-local connection is reused by get_connection()
 
 
 # ── CRUD helpers ──────────────────────────────────────────────
@@ -266,7 +269,7 @@ def upsert_firm(conn, name: str, **kwargs) -> int:
                 f"UPDATE firms SET {sets}, updated_at = ? WHERE id = ?",
                 (*kwargs.values(), datetime.utcnow().isoformat(), existing["id"])
             )
-            if not getattr(conn, '_batch', False):
+            if not _is_batch(conn):
                 conn.commit()
         return existing["id"]
     cols = ["name"] + list(kwargs.keys())
