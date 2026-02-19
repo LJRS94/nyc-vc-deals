@@ -95,15 +95,15 @@ OPENCORPORATES_TTL = 86400 * 7  # 7 days — registrations don't change
 def run_opencorporates_scraper(days_back: int = 30) -> dict:
     """
     Search OpenCorporates for recently registered companies in New York
-    with startup-indicator terms. API key is optional — the public endpoint
-    works with lower rate limits.
+    with startup-indicator terms. Requires OPENCORPORATES_API_KEY env var
+    (the v0.4 API no longer allows unauthenticated requests).
 
     Returns stats dict: {found, new, skipped, errors}.
     """
     api_key = os.environ.get("OPENCORPORATES_API_KEY")
-    # Public endpoint works without key, just slower
     if not api_key:
-        logger.info("[OpenCorporates] OPENCORPORATES_API_KEY not set — using public endpoint (slower rate limits)")
+        logger.warning("[OpenCorporates] OPENCORPORATES_API_KEY not set — skipping (API requires authentication)")
+        return {"found": 0, "new": 0, "skipped": 0, "errors": 0}
 
     stats = {"found": 0, "new": 0, "skipped": 0, "errors": 0}
     created_since = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -462,286 +462,101 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
 #  3. NY State DOS Entity Search
 # ═══════════════════════════════════════════════════════════════
 
-NY_DOS_SEARCH_URL = "https://appext20.dos.ny.gov/corp_public/CORPSEARCH.ENTITY_SEARCH_ENTRY"
-NY_DOS_RESULTS_URL = "https://appext20.dos.ny.gov/corp_public/CORPSEARCH.ENTITY_SEARCH_RESULTS"
-
-NY_DOS_SEARCH_TERMS = [
-    "tech", "software", "ai", "health", "bio", "fintech",
-    "platform", "labs", "data", "analytics",
-]
-
-
 def run_ny_dos_scraper() -> dict:
     """
-    Scrape NY State Department of State entity search for recently formed
-    corporations (not LLCs). This is a public website — no API key needed.
+    NY State DOS entity search is currently disabled.
+    The old Oracle Forms endpoint (appext20.dos.ny.gov) was retired and
+    replaced with a JavaScript SPA at apps.dos.ny.gov/publicInquiry/ that
+    requires browser automation (Playwright/Selenium) to scrape. Re-enable
+    this when a headless browser dependency is added.
 
     Returns stats dict: {found, new, skipped, errors}.
     """
-    stats = {"found": 0, "new": 0, "skipped": 0, "errors": 0}
-
-    conn = get_connection()
-    log_id = log_scrape(conn, "ny_dos")
-    existing_names = _existing_normalized_names(conn)
-
-    all_entities = []
-
-    try:
-        for term in NY_DOS_SEARCH_TERMS:
-            if len(all_entities) >= 100:
-                break
-
-            try:
-                # POST the search form
-                resp = fetch(
-                    NY_DOS_SEARCH_URL,
-                    timeout=20,
-                )
-                if resp.status_code != 200:
-                    logger.debug(f"[NY DOS] Search page returned {resp.status_code}")
-                    stats["errors"] += 1
-                    continue
-
-                # Parse the search form for any required hidden fields
-                soup = BeautifulSoup(resp.text, "html.parser")
-
-                # Attempt to search using query parameters
-                search_params = {
-                    "p_search_type": "BEGINS",
-                    "p_entity_name": term,
-                    "p_entity_type": "CORPORATION",
-                    "p_search_category": "ACTIVE",
-                }
-
-                results_resp = fetch(
-                    NY_DOS_RESULTS_URL,
-                    params=search_params,
-                    timeout=20,
-                )
-
-                if results_resp.status_code != 200:
-                    logger.debug(f"[NY DOS] Results returned {results_resp.status_code} for '{term}'")
-                    stats["errors"] += 1
-                    continue
-
-                result_soup = BeautifulSoup(results_resp.text, "html.parser")
-
-                # Parse results table
-                tables = result_soup.find_all("table")
-                for table in tables:
-                    rows = table.find_all("tr")
-                    for row in rows[1:]:  # skip header
-                        cells = row.find_all("td")
-                        if len(cells) >= 3:
-                            entity_name = cells[0].get_text(strip=True)
-                            dos_id = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-                            filing_date = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                            entity_type = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                            status = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-
-                            all_entities.append({
-                                "name": entity_name,
-                                "dos_id": dos_id,
-                                "filing_date": filing_date,
-                                "entity_type": entity_type,
-                                "status": status,
-                            })
-
-                logger.info(f"[NY DOS] term='{term}': found {len(rows) - 1 if rows else 0} results")
-
-            except Exception as e:
-                logger.warning(f"[NY DOS] Search failed for '{term}': {e}")
-                stats["errors"] += 1
-
-            # Rate limit: 2s between pages
-            time.sleep(2)
-
-        stats["found"] = len(all_entities)
-        logger.info(f"[NY DOS] Collected {stats['found']} entities total")
-
-        # Insert deals
-        with batch_connection() as conn:
-            for entity in all_entities:
-                try:
-                    name = entity.get("name", "").strip()
-                    if not name:
-                        continue
-
-                    # Filter out non-startup entities
-                    if not _looks_like_startup(name):
-                        stats["skipped"] += 1
-                        continue
-
-                    # Dedup
-                    norm = normalize_company_name(name)
-                    if norm in existing_names:
-                        stats["skipped"] += 1
-                        continue
-
-                    # Skip known VC firms
-                    skip = should_skip_deal(conn, name)
-                    if skip:
-                        stats["skipped"] += 1
-                        continue
-
-                    deal_id = insert_deal(
-                        conn, name,
-                        date_announced=entity.get("filing_date") or None,
-                        source_url=NY_DOS_SEARCH_URL,
-                        source_type="other",
-                        confidence_score=0.2,
-                        raw_text=json.dumps({
-                            "dos_id": entity.get("dos_id"),
-                            "entity_type": entity.get("entity_type"),
-                            "status": entity.get("status"),
-                            "source": "ny_dos",
-                        })[:2000],
-                    )
-
-                    if deal_id:
-                        stats["new"] += 1
-                        existing_names.add(norm)
-
-                except Exception as e:
-                    logger.debug(f"[NY DOS] Failed to insert '{name}': {e}")
-                    stats["errors"] += 1
-
-            finish_scrape(conn, log_id, "success", stats["found"], stats["new"])
-
-    except Exception as e:
-        logger.error(f"[NY DOS] Scraper error: {e}")
-        try:
-            conn_err = get_connection()
-            finish_scrape(conn_err, log_id, "error", stats["found"], stats["new"], str(e))
-        except Exception:
-            pass
-
-    logger.info(
-        f"[NY DOS] Done: {stats['found']} found, {stats['new']} new, "
-        f"{stats['skipped']} skipped, {stats['errors']} errors"
+    logger.warning(
+        "[NY DOS] Disabled — the old endpoint was retired. "
+        "The new site (apps.dos.ny.gov/publicInquiry/) is a JavaScript SPA "
+        "that requires browser automation to scrape."
     )
-    return stats
+    return {"found": 0, "new": 0, "skipped": 0, "errors": 0}
 
 
 # ═══════════════════════════════════════════════════════════════
 #  4. SBIR.gov Federal Grants
 # ═══════════════════════════════════════════════════════════════
 
-SBIR_API_URL = "https://api.www.sbir.gov/public/api/awards"
-SBIR_FALLBACK_URL = "https://www.sbir.gov/api/awards.json"
+SBIR_CSV_URL = "https://data.www.sbir.gov/awarddatapublic/award_data.csv"
 SBIR_TTL = 86400 * 7  # 7 days — government data updates slowly
 
 
 def run_sbir_scraper(days_back: int = 180) -> dict:
     """
-    Search SBIR.gov for federal SBIR/STTR awards to New York state companies.
-    No API key needed — public government data.
+    Download SBIR.gov bulk CSV of federal SBIR/STTR awards and filter for
+    New York state companies. No API key needed — public government data.
+    (The JSON API at api.www.sbir.gov is unreliable; the CSV bulk export
+    at data.www.sbir.gov is the stable alternative.)
 
     Returns stats dict: {found, new, skipped, errors}.
     """
+    import csv
+    import io
+
     stats = {"found": 0, "new": 0, "skipped": 0, "errors": 0}
-    since_date = (datetime.now() - timedelta(days=days_back)).strftime("%m/%d/%Y")
 
     conn = get_connection()
     log_id = log_scrape(conn, "sbir_gov")
     existing_names = _existing_normalized_names(conn)
 
-    all_awards = []
-
     try:
-        # Paginate through results
-        start = 0
-        rows_per_page = 50
-        max_results = 200
+        logger.info("[SBIR] Downloading bulk award CSV (this may take a moment)...")
+        resp = fetch(
+            SBIR_CSV_URL,
+            headers={"User-Agent": "Mozilla/5.0 (NYC VC Scraper)"},
+            timeout=120,
+            ttl=SBIR_TTL,
+        )
 
-        while start < max_results:
-            params = {
-                "rows": rows_per_page,
-                "start": start,
-                "states": "NY",
-            }
+        if resp.status_code != 200:
+            logger.warning(f"[SBIR] CSV download returned HTTP {resp.status_code}")
+            finish_scrape(conn, log_id, "error", 0, 0, f"HTTP {resp.status_code}")
+            return stats
 
-            try:
-                resp = fetch(
-                    SBIR_API_URL,
-                    params=params,
-                    timeout=20,
-                    ttl=SBIR_TTL,
-                )
+        # Parse CSV
+        cutoff = datetime.now() - timedelta(days=days_back)
+        reader = csv.DictReader(io.StringIO(resp.text))
 
-                if resp.status_code != 200:
-                    # Try fallback URL
-                    logger.debug(f"[SBIR] Primary API returned {resp.status_code}, trying fallback")
-                    resp = fetch(
-                        SBIR_FALLBACK_URL,
-                        params=params,
-                        timeout=20,
-                        ttl=SBIR_TTL,
-                    )
+        all_awards = []
+        for row in reader:
+            # Filter to NY state only
+            state = (row.get("Company State") or row.get("State") or "").strip().upper()
+            if state != "NY":
+                continue
 
-                if resp.status_code != 200:
-                    logger.warning(f"[SBIR] API returned {resp.status_code}")
+            # Filter by date
+            date_str = (row.get("Award Start Date") or row.get("Award Date") or "").strip()
+            award_date = None
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    award_date = datetime.strptime(date_str[:19], fmt)
                     break
+                except (ValueError, TypeError):
+                    continue
 
-                data = resp.json()
+            if award_date and award_date < cutoff:
+                continue
 
-                # Handle different response formats
-                if isinstance(data, list):
-                    awards = data
-                elif isinstance(data, dict):
-                    awards = data.get("results", data.get("awards", data.get("response", {}).get("docs", [])))
-                else:
-                    awards = []
-
-                if not awards:
-                    break
-
-                # Filter by date — only keep recent awards
-                cutoff = datetime.now() - timedelta(days=days_back)
-                for award in awards:
-                    award_date_str = (
-                        award.get("award_date")
-                        or award.get("awardDate")
-                        or award.get("date")
-                        or ""
-                    )
-                    # Try to parse the date
-                    award_date = None
-                    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
-                        try:
-                            award_date = datetime.strptime(str(award_date_str)[:19], fmt)
-                            break
-                        except (ValueError, TypeError):
-                            continue
-
-                    if award_date and award_date < cutoff:
-                        continue
-
-                    all_awards.append(award)
-
-                logger.info(f"[SBIR] Page start={start}: {len(awards)} results, {len(all_awards)} after filter")
-
-                if len(awards) < rows_per_page:
-                    break
-                start += rows_per_page
-                time.sleep(1)
-
-            except Exception as e:
-                logger.warning(f"[SBIR] API request failed (start={start}): {e}")
-                stats["errors"] += 1
+            all_awards.append(row)
+            if len(all_awards) >= 200:
                 break
 
         stats["found"] = len(all_awards)
-        logger.info(f"[SBIR] Collected {stats['found']} NY awards total")
+        logger.info(f"[SBIR] Found {stats['found']} NY awards in last {days_back} days")
 
         # Insert deals
-        with batch_connection() as conn:
+        with batch_connection() as bconn:
             for award in all_awards:
                 try:
                     company_name = (
-                        award.get("firm", "")
-                        or award.get("company", "")
-                        or award.get("awardee", "")
+                        award.get("Company Name") or award.get("Firm") or ""
                     ).strip()
 
                     if not company_name:
@@ -754,22 +569,18 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                         continue
 
                     # Skip known VC firms
-                    skip = should_skip_deal(conn, company_name)
-                    if skip:
+                    if should_skip_deal(bconn, company_name):
                         stats["skipped"] += 1
                         continue
 
                     # Extract amount
                     amount = None
-                    for amount_key in ("award_amount", "awardAmount", "amount"):
-                        raw_amount = award.get(amount_key)
-                        if raw_amount is not None:
-                            try:
-                                amount = float(str(raw_amount).replace(",", "").replace("$", ""))
-                            except (ValueError, TypeError):
-                                pass
-                            if amount:
-                                break
+                    raw_amount = (award.get("Award Amount") or award.get("Amount") or "").strip()
+                    if raw_amount:
+                        try:
+                            amount = float(raw_amount.replace(",", "").replace("$", ""))
+                        except (ValueError, TypeError):
+                            pass
 
                     # Stage from amount
                     stage = classify_stage_from_amount(amount) if amount else "Unknown"
@@ -777,42 +588,41 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                         amount = None
                         stage = "Unknown"
 
-                    # Description from abstract
+                    # Description
                     abstract = (
-                        award.get("abstract", "")
-                        or award.get("award_title", "")
-                        or award.get("title", "")
-                    )
+                        award.get("Abstract") or award.get("Award Title") or ""
+                    ).strip()
                     description = abstract[:500] if abstract else None
 
-                    # Category from description
+                    # Category
                     category_text = f"{company_name} {description or ''}"
                     category_name = classify_sector(category_text)
-                    cat_id = get_category_id(conn, category_name) if category_name else None
+                    cat_id = get_category_id(bconn, category_name) if category_name else None
 
                     # Date
-                    award_date = (
-                        award.get("award_date")
-                        or award.get("awardDate")
-                        or award.get("date")
+                    date_announced = (
+                        award.get("Award Start Date") or award.get("Award Date") or ""
+                    ).strip()
+                    if date_announced and "T" in date_announced:
+                        date_announced = date_announced[:10]
+
+                    # Agency info
+                    agency = (award.get("Agency") or "").strip()
+                    program = (award.get("Program") or award.get("Phase") or "").strip()
+                    sbir_id = (award.get("Award ID") or award.get("Award Number") or "").strip()
+
+                    source_url = (
+                        f"https://www.sbir.gov/award/{sbir_id}"
+                        if sbir_id else "https://www.sbir.gov"
                     )
-                    if award_date and "T" in str(award_date):
-                        award_date = str(award_date)[:10]
-
-                    # Agency info for raw_text
-                    agency = award.get("agency") or award.get("fundingAgency") or ""
-                    program = award.get("program") or award.get("awardType") or ""
-                    sbir_id = award.get("award_id") or award.get("awardId") or ""
-
-                    source_url = f"https://www.sbir.gov/award/{sbir_id}" if sbir_id else "https://www.sbir.gov"
 
                     deal_id = insert_deal(
-                        conn, company_name,
+                        bconn, company_name,
                         company_description=description,
                         stage=stage,
                         amount_usd=amount,
                         amount_disclosed=1 if amount else 0,
-                        date_announced=str(award_date)[:10] if award_date else None,
+                        date_announced=date_announced[:10] if date_announced else None,
                         source_url=source_url,
                         source_type="other",
                         category_id=cat_id,
@@ -821,9 +631,9 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                             "agency": agency,
                             "program": program,
                             "sbir_id": sbir_id,
-                            "city": award.get("city"),
-                            "state": award.get("state", "NY"),
-                            "source": "sbir_gov",
+                            "city": (award.get("Company City") or "").strip(),
+                            "state": "NY",
+                            "source": "sbir_gov_csv",
                         })[:2000],
                     )
 
@@ -831,17 +641,16 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                         stats["new"] += 1
                         existing_names.add(norm)
 
-                        # Store SBIR-specific metadata
                         if agency:
-                            upsert_deal_metadata(conn, deal_id, "sbir_agency", str(agency))
+                            upsert_deal_metadata(bconn, deal_id, "sbir_agency", agency)
                         if program:
-                            upsert_deal_metadata(conn, deal_id, "sbir_program", str(program))
+                            upsert_deal_metadata(bconn, deal_id, "sbir_program", program)
 
                 except Exception as e:
                     logger.debug(f"[SBIR] Failed to insert award: {e}")
                     stats["errors"] += 1
 
-            finish_scrape(conn, log_id, "success", stats["found"], stats["new"])
+            finish_scrape(bconn, log_id, "success", stats["found"], stats["new"])
 
     except Exception as e:
         logger.error(f"[SBIR] Scraper error: {e}")

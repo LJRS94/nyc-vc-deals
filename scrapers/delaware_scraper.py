@@ -266,14 +266,14 @@ def parse_form_d_for_de_info(accession_number: str) -> Optional[Dict]:
         return None
 
     acc_clean = accession_number.replace("-", "")
+    # Accession numbers have format {CIK_padded_10}-{YY}-{seq};
+    # the first 10 digits of the cleaned number are the zero-padded CIK.
+    cik = acc_clean[:10].lstrip("0") or "0"
 
     try:
         from xml.etree import ElementTree as ET
 
-        # Try to fetch the filing index
-        # CIK is in the first 10 digits of accession for older filings,
-        # but we may need to search
-        index_url = f"https://www.sec.gov/Archives/edgar/data/{acc_clean}/"
+        index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/"
         resp = fetch(index_url, headers=SEC_HEADERS, timeout=15)
 
         if resp.status_code != 200:

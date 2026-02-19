@@ -98,10 +98,8 @@ def parse_amount(text: str) -> Optional[float]:
         # Already looks like a full amount (e.g. $5000000)
         if val >= 100_000:
             return val
-        # Small number with $ likely means millions (e.g. "$5" in "$5 round")
-        # but only if it looks like a compact notation (1-999 range)
-        if 1 <= val <= 999:
-            return val * 1_000_000
+        # Don't guess on bare dollar amounts without a multiplier suffix —
+        # "$150" is ambiguous (could be $150 or $150M), so return None.
     return None
 
 
