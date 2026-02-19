@@ -1,44 +1,1123 @@
 [
   {
-    "name": "Blue Owl Capital",
-    "website": null,
-    "portfolio_url": null,
-    "focus_stages": "[\"Seed\"]",
-    "focus_sectors": "[]"
+    "name": "Union Square Ventures",
+    "website": "https://www.usv.com",
+    "portfolio_url": "https://www.usv.com/portfolio",
+    "focus": [
+      "Fintech",
+      "Web3",
+      "Climate",
+      "Health"
+    ],
+    "source": "seed"
   },
   {
-    "name": "QED Investors",
-    "website": null,
-    "portfolio_url": null,
-    "focus_stages": "[\"Seed\"]",
-    "focus_sectors": "[]"
+    "name": "Lerer Hippeau",
+    "website": "https://www.lererhippeau.com",
+    "portfolio_url": "https://www.lererhippeau.com/portfolio",
+    "focus": [
+      "Consumer",
+      "D2C",
+      "Media",
+      "SaaS"
+    ],
+    "source": "seed"
   },
   {
-    "name": "Jens Grede",
-    "website": null,
-    "portfolio_url": null,
-    "focus_stages": "[\"Unknown\"]",
-    "focus_sectors": "[]"
+    "name": "FirstMark Capital",
+    "website": "https://firstmarkcap.com",
+    "portfolio_url": "https://firstmarkcap.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "SaaS",
+      "Fintech",
+      "AI"
+    ],
+    "source": "seed"
   },
   {
-    "name": "FPV Ventures",
-    "website": null,
-    "portfolio_url": null,
-    "focus_stages": "[\"Seed\"]",
-    "focus_sectors": "[]"
+    "name": "Insight Partners",
+    "website": "https://www.insightpartners.com",
+    "portfolio_url": "https://www.insightpartners.com/portfolio",
+    "focus": [
+      "SaaS",
+      "Fintech",
+      "Cybersecurity"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Greycroft",
+    "website": "https://www.greycroft.com",
+    "portfolio_url": "https://www.greycroft.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Fintech",
+      "Health",
+      "Enterprise"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "BoxGroup",
+    "website": "https://www.boxgroup.com",
+    "portfolio_url": "https://www.boxgroup.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Fintech",
+      "Health",
+      "SaaS"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Primary Venture Partners",
+    "website": "https://www.primaryvc.com",
+    "portfolio_url": "https://www.primaryvc.com/portfolio",
+    "focus": [
+      "SaaS",
+      "Fintech",
+      "Health"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Bowery Capital",
+    "website": "https://www.bowerycap.com",
+    "portfolio_url": "https://www.bowerycap.com/portfolio",
+    "focus": [
+      "B2B SaaS",
+      "Enterprise"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "RRE Ventures",
+    "website": "https://www.rre.com",
+    "portfolio_url": "https://www.rre.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "Fintech",
+      "Health",
+      "AI"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Flybridge Capital",
+    "website": "https://www.flybridge.com",
+    "portfolio_url": "https://www.flybridge.com/portfolio",
+    "focus": [
+      "SaaS",
+      "AI",
+      "Health",
+      "Fintech"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Thrive Capital",
+    "website": "https://www.thrivecap.com",
+    "portfolio_url": "https://www.thrivecap.com",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "Fintech",
+      "Media"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Notation Capital",
+    "website": "https://www.notation.vc",
+    "portfolio_url": "https://www.notation.vc/portfolio",
+    "focus": [
+      "Developer Tools",
+      "AI",
+      "Fintech"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Work-Bench",
+    "website": "https://www.work-bench.com",
+    "portfolio_url": "https://www.work-bench.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "SaaS",
+      "Cybersecurity"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Torch Capital",
+    "website": "https://www.torch.vc",
+    "portfolio_url": "https://www.torch.vc",
+    "focus": [
+      "Consumer",
+      "Fintech",
+      "Health"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Compound",
+    "website": "https://www.compound.vc",
+    "portfolio_url": "https://www.compound.vc",
+    "focus": [
+      "Fintech",
+      "SaaS",
+      "AI"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Two Sigma Ventures",
+    "website": "https://www.twosigmaventures.com",
+    "portfolio_url": "https://www.twosigmaventures.com/portfolio",
+    "focus": [
+      "AI",
+      "Data",
+      "Fintech",
+      "Health"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Tiger Global Management",
+    "website": "https://www.tigerglobal.com",
+    "portfolio_url": "https://www.tigerglobal.com",
+    "focus": [
+      "SaaS",
+      "Consumer",
+      "Fintech"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Contour Venture Partners",
+    "website": "https://www.contourventures.com",
+    "portfolio_url": "https://www.contourventures.com/portfolio",
+    "focus": [
+      "Fintech",
+      "Enterprise",
+      "Insurtech"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "ERA (Entrepreneurs Roundtable Accelerator)",
+    "website": "https://www.era.co",
+    "portfolio_url": "https://www.era.co/portfolio",
+    "focus": [
+      "AI",
+      "SaaS",
+      "Health",
+      "Consumer"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Tusk Venture Partners",
+    "website": "https://www.tuskventurepartners.com",
+    "portfolio_url": "https://www.tuskventurepartners.com/portfolio",
+    "focus": [
+      "Regulated",
+      "Fintech",
+      "Health",
+      "Transport"
+    ],
+    "source": "seed"
+  },
+  {
+    "name": "Bessemer Venture Partners",
+    "website": "https://www.bvp.com",
+    "portfolio_url": "https://www.bvp.com/companies",
+    "focus": [
+      "Enterprise",
+      "Consumer",
+      "Healthcare",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Lux Capital",
+    "website": "https://www.luxcapital.com",
+    "portfolio_url": "https://www.luxcapital.com/portfolio",
+    "focus": [
+      "Deep Tech",
+      "Science",
+      "Health",
+      "Defense"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Boldstart Ventures",
+    "website": "https://www.boldstart.vc",
+    "portfolio_url": "https://www.boldstart.vc/portfolio",
+    "focus": [
+      "Developer Tools",
+      "Enterprise",
+      "SaaS",
+      "Infra"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "AlleyCorp",
+    "website": "https://www.alleycorp.com",
+    "portfolio_url": "https://www.alleycorp.com/portfolio",
+    "focus": [
+      "Healthcare",
+      "Enterprise",
+      "Real Estate",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "FJ Labs",
+    "website": "https://fjlabs.com",
+    "portfolio_url": "https://fjlabs.com/portfolio",
+    "focus": [
+      "Marketplace",
+      "Consumer",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Betaworks Ventures",
+    "website": "https://www.betaworks.com",
+    "portfolio_url": "https://www.betaworks.com/portfolio",
+    "focus": [
+      "Media",
+      "AI",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Eniac Ventures",
+    "website": "https://www.eniac.vc",
+    "portfolio_url": "https://www.eniac.vc/portfolio",
+    "focus": [
+      "Mobile",
+      "Emerging Tech",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "M13",
+    "website": "https://m13.co",
+    "portfolio_url": "https://m13.co/portfolio",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Spark Capital",
+    "website": "https://www.sparkcapital.com",
+    "portfolio_url": "https://www.sparkcapital.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Enterprise",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "General Catalyst",
+    "website": "https://www.generalcatalyst.com",
+    "portfolio_url": "https://www.generalcatalyst.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "Health",
+      "Fintech",
+      "AI"
+    ],
+    "source": "expanded"
   },
   {
     "name": "Andreessen Horowitz",
-    "website": null,
-    "portfolio_url": null,
-    "focus_stages": "[\"Seed\"]",
-    "focus_sectors": "[]"
+    "website": "https://a16z.com",
+    "portfolio_url": "https://a16z.com/portfolio",
+    "focus": [
+      "AI",
+      "Crypto",
+      "Bio",
+      "Enterprise"
+    ],
+    "source": "expanded"
   },
   {
-    "name": "Abundant Venture Partners",
-    "website": null,
-    "portfolio_url": null,
-    "focus_stages": "[\"Unknown\"]",
-    "focus_sectors": "[]"
+    "name": "Accel",
+    "website": "https://www.accel.com",
+    "portfolio_url": "https://www.accel.com/portfolio",
+    "focus": [
+      "SaaS",
+      "Fintech",
+      "Consumer",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Index Ventures",
+    "website": "https://www.indexventures.com",
+    "portfolio_url": "https://www.indexventures.com/companies",
+    "focus": [
+      "SaaS",
+      "Fintech",
+      "Consumer",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Ribbit Capital",
+    "website": "https://ribbitcap.com",
+    "portfolio_url": "https://ribbitcap.com/portfolio",
+    "focus": [
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Scout Ventures",
+    "website": "https://www.scoutventures.com",
+    "portfolio_url": "https://www.scoutventures.com/portfolio",
+    "focus": [
+      "Defense",
+      "Dual-Use",
+      "GovTech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Point72 Ventures",
+    "website": "https://point72.com/ventures",
+    "portfolio_url": "https://point72.com/ventures/portfolio",
+    "focus": [
+      "Fintech",
+      "Data",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Alpaca VC",
+    "website": "https://www.alpaca.vc",
+    "portfolio_url": "https://www.alpaca.vc/portfolio",
+    "focus": [
+      "Consumer",
+      "Food",
+      "Retail"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "BDMI",
+    "website": "https://www.bdmi.com",
+    "portfolio_url": "https://www.bdmi.com/portfolio",
+    "focus": [
+      "Media",
+      "Web3",
+      "SaaS",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Great Oaks Venture Capital",
+    "website": "https://www.greatoaksvc.com",
+    "portfolio_url": "https://www.greatoaksvc.com/portfolio",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Starta Ventures",
+    "website": "https://www.starta.vc",
+    "portfolio_url": "https://www.starta.vc/portfolio",
+    "focus": [
+      "Enterprise",
+      "AI",
+      "Health"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Hypothesis",
+    "website": "https://www.hypothesisvc.com",
+    "portfolio_url": "https://www.hypothesisvc.com/portfolio",
+    "focus": [
+      "Health",
+      "AI",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Crossbeam Venture Partners",
+    "website": "https://www.crossbeamvp.com",
+    "portfolio_url": "https://www.crossbeamvp.com/portfolio",
+    "focus": [
+      "SaaS",
+      "Enterprise",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Giant Ventures",
+    "website": "https://www.giant.vc",
+    "portfolio_url": "https://www.giant.vc/portfolio",
+    "focus": [
+      "Climate",
+      "Health",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Slow Ventures",
+    "website": "https://slow.co",
+    "portfolio_url": "https://slow.co/portfolio",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Bain Capital Ventures",
+    "website": "https://www.baincapitalventures.com",
+    "portfolio_url": "https://www.baincapitalventures.com/portfolio",
+    "focus": [
+      "SaaS",
+      "Fintech",
+      "Infra"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "GV (Google Ventures)",
+    "website": "https://www.gv.com",
+    "portfolio_url": "https://www.gv.com/portfolio",
+    "focus": [
+      "AI",
+      "Health",
+      "Enterprise",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "NEA",
+    "website": "https://www.nea.com",
+    "portfolio_url": "https://www.nea.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "Health",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Canaan Partners",
+    "website": "https://www.canaan.com",
+    "portfolio_url": "https://www.canaan.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "Health",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "645 Ventures",
+    "website": "https://645ventures.com",
+    "portfolio_url": "https://645ventures.com/portfolio",
+    "focus": [
+      "AI",
+      "SaaS",
+      "Enterprise"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Precursor Ventures",
+    "website": "https://precursorvc.com",
+    "portfolio_url": "https://precursorvc.com/portfolio",
+    "focus": [
+      "Pre-Seed",
+      "Consumer",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "IA Ventures",
+    "website": "https://www.iaventures.com",
+    "portfolio_url": "https://www.iaventures.com/portfolio",
+    "focus": [
+      "Data",
+      "AI",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Founder Collective",
+    "website": "https://www.foundercollective.com",
+    "portfolio_url": "https://www.foundercollective.com/portfolio",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Collaborative Fund",
+    "website": "https://www.collaborativefund.com",
+    "portfolio_url": "https://www.collaborativefund.com/portfolio",
+    "focus": [
+      "Climate",
+      "Health",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "High Line Venture Partners",
+    "website": "https://www.hlvp.com",
+    "portfolio_url": "https://www.hlvp.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "AI",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Harlem Capital",
+    "website": "https://www.harlemcapital.com",
+    "portfolio_url": "https://www.harlemcapital.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Health",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Company Ventures",
+    "website": "https://www.companyventures.co",
+    "portfolio_url": "https://www.companyventures.co/portfolio",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Story Ventures",
+    "website": "https://www.storyventures.com",
+    "portfolio_url": "https://www.storyventures.com/portfolio",
+    "focus": [
+      "AI",
+      "Infra",
+      "Enterprise"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Afore Capital",
+    "website": "https://www.afore.vc",
+    "portfolio_url": "https://www.afore.vc/portfolio",
+    "focus": [
+      "Pre-Seed",
+      "SaaS",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "XYZ Venture Capital",
+    "website": "https://www.xyzvc.com",
+    "portfolio_url": "https://www.xyzvc.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "SaaS",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Conversion Capital",
+    "website": "https://www.conversion.vc",
+    "portfolio_url": "https://www.conversion.vc/portfolio",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Rainfall Ventures",
+    "website": "https://www.rainfall.vc",
+    "portfolio_url": "https://www.rainfall.vc",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Pear VC",
+    "website": "https://www.pear.vc",
+    "portfolio_url": "https://www.pear.vc/companies",
+    "focus": [
+      "Enterprise",
+      "AI",
+      "Health"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Goodwater Capital",
+    "website": "https://www.goodwatercap.com",
+    "portfolio_url": "https://www.goodwatercap.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Fintech",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Anthemis",
+    "website": "https://www.anthemis.com",
+    "portfolio_url": "https://www.anthemis.com/portfolio",
+    "focus": [
+      "Fintech",
+      "Insurtech",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "SignalFire",
+    "website": "https://signalfire.com",
+    "portfolio_url": "https://signalfire.com/portfolio",
+    "focus": [
+      "AI",
+      "Data",
+      "Enterprise"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Ayon Capital",
+    "website": "https://www.ayoncapital.com",
+    "portfolio_url": "https://www.ayoncapital.com",
+    "focus": [
+      "AI",
+      "SaaS",
+      "Enterprise"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Asymmetric Capital Partners",
+    "website": "https://www.asymmetric.vc",
+    "portfolio_url": "https://www.asymmetric.vc",
+    "focus": [
+      "AI",
+      "Fintech",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "B Capital Group",
+    "website": "https://www.bcapgroup.com",
+    "portfolio_url": "https://www.bcapgroup.com/companies",
+    "focus": [
+      "Health",
+      "AI",
+      "Enterprise",
+      "Climate"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Bling Capital",
+    "website": "https://www.blingcap.com",
+    "portfolio_url": "https://www.blingcap.com",
+    "focus": [
+      "AI",
+      "SaaS",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Adjacent",
+    "website": "https://www.adjacent.vc",
+    "portfolio_url": "https://www.adjacent.vc/portfolio",
+    "focus": [
+      "Enterprise",
+      "AI",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Antler",
+    "website": "https://www.antler.co",
+    "portfolio_url": "https://www.antler.co/portfolio",
+    "focus": [
+      "Pre-Seed",
+      "AI",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Techstars NYC",
+    "website": "https://www.techstars.com",
+    "portfolio_url": "https://www.techstars.com/portfolio",
+    "focus": [
+      "Pre-Seed",
+      "AI",
+      "SaaS",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Homebrew",
+    "website": "https://homebrew.co",
+    "portfolio_url": "https://homebrew.co/portfolio",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Corigin Ventures",
+    "website": "https://www.corigin.com",
+    "portfolio_url": "https://www.corigin.com/portfolio",
+    "focus": [
+      "Proptech",
+      "Consumer",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "MetaProp",
+    "website": "https://www.metaprop.vc",
+    "portfolio_url": "https://www.metaprop.vc/portfolio",
+    "focus": [
+      "Proptech",
+      "Real Estate"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Velvet Sea Ventures",
+    "website": "https://www.velvetsea.com",
+    "portfolio_url": "https://www.velvetsea.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Media",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Samsara Capital",
+    "website": "https://www.samsaracap.com",
+    "portfolio_url": "https://www.samsaracap.com",
+    "focus": [
+      "Consumer",
+      "Health",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Picus Capital",
+    "website": "https://www.picuscap.com",
+    "portfolio_url": "https://www.picuscap.com/portfolio",
+    "focus": [
+      "SaaS",
+      "Fintech",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Human Capital",
+    "website": "https://www.humancapital.vc",
+    "portfolio_url": "https://www.humancapital.vc",
+    "focus": [
+      "AI",
+      "Health",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Rethink Impact",
+    "website": "https://rethinkimpact.com",
+    "portfolio_url": "https://rethinkimpact.com/portfolio",
+    "focus": [
+      "Health",
+      "Climate",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Warburg Pincus",
+    "website": "https://www.warburgpincus.com",
+    "portfolio_url": "https://www.warburgpincus.com/investments",
+    "focus": [
+      "Fintech",
+      "Health",
+      "Energy",
+      "Tech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Kopek Ventures",
+    "website": "https://kopekventures.com",
+    "portfolio_url": "https://kopekventures.com/portfolio",
+    "focus": [
+      "Media",
+      "Consumer",
+      "Retail"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Hivemind Capital",
+    "website": "https://hivemind.capital",
+    "portfolio_url": "https://hivemind.capital",
+    "focus": [
+      "Web3",
+      "Crypto",
+      "DeFi"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Social Starts",
+    "website": "https://www.socialstarts.com",
+    "portfolio_url": "https://www.socialstarts.com/portfolio",
+    "focus": [
+      "Health",
+      "Consumer",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Greenoaks",
+    "website": "https://www.greenoaks.com",
+    "portfolio_url": "https://www.greenoaks.com",
+    "focus": [
+      "Fintech",
+      "Consumer",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "RTP Global",
+    "website": "https://rtp.vc",
+    "portfolio_url": "https://rtp.vc/portfolio",
+    "focus": [
+      "Consumer",
+      "Enterprise",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Coatue Management",
+    "website": "https://www.coatue.com",
+    "portfolio_url": "https://www.coatue.com/portfolio",
+    "focus": [
+      "AI",
+      "SaaS",
+      "Consumer",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Sapphire Ventures",
+    "website": "https://sapphireventures.com",
+    "portfolio_url": "https://sapphireventures.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "SaaS",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Accomplice",
+    "website": "https://www.accomplice.co",
+    "portfolio_url": "https://www.accomplice.co/portfolio",
+    "focus": [
+      "AI",
+      "SaaS",
+      "Consumer"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "GGV Capital",
+    "website": "https://www.ggvc.com",
+    "portfolio_url": "https://www.ggvc.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Enterprise",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Gaingels",
+    "website": "https://www.gaingels.com",
+    "portfolio_url": "https://www.gaingels.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Health",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Peterson Ventures",
+    "website": "https://petersonventures.com",
+    "portfolio_url": "https://petersonventures.com/portfolio",
+    "focus": [
+      "SaaS",
+      "Consumer",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Third Kind Venture Capital",
+    "website": "https://www.thirdkindvc.com",
+    "portfolio_url": "https://www.thirdkindvc.com/portfolio",
+    "focus": [
+      "Enterprise",
+      "SaaS",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Montage Ventures",
+    "website": "https://montageventures.com",
+    "portfolio_url": "https://montageventures.com/portfolio",
+    "focus": [
+      "AI",
+      "Enterprise",
+      "Health"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Arete Syndicate",
+    "website": "https://www.aretesyndicate.com",
+    "portfolio_url": "https://www.aretesyndicate.com",
+    "focus": [
+      "Pre-Seed",
+      "AI",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Quotidian Ventures",
+    "website": "https://www.quotidianventures.com",
+    "portfolio_url": "https://www.quotidianventures.com/portfolio",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "Fintech"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Brand Foundry Ventures",
+    "website": "https://brandfoundryventures.com",
+    "portfolio_url": "https://brandfoundryventures.com/portfolio",
+    "focus": [
+      "Consumer",
+      "D2C",
+      "Brand"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Pario Ventures",
+    "website": "https://www.parioventures.com",
+    "portfolio_url": "https://www.parioventures.com",
+    "focus": [
+      "Consumer",
+      "SaaS",
+      "AI"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Lucas Point Ventures",
+    "website": "https://lucaspointventures.com",
+    "portfolio_url": "https://lucaspointventures.com/portfolio",
+    "focus": [
+      "Seed",
+      "Enterprise",
+      "SaaS"
+    ],
+    "source": "expanded"
+  },
+  {
+    "name": "Maveron",
+    "website": "https://www.maveron.com",
+    "portfolio_url": "https://www.maveron.com/portfolio",
+    "focus": [
+      "Consumer",
+      "Health",
+      "Food"
+    ],
+    "source": "expanded"
   }
 ]

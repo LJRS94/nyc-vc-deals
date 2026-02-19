@@ -8,7 +8,7 @@ import sys
 import json
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
@@ -644,6 +644,54 @@ def get_categories():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/portfolio", methods=["GET"])
+def get_portfolio():
+    """Portfolio companies scraped from VC firm websites."""
+    conn = get_connection()
+    firm_id = request.args.get("firm_id", type=int)
+    search = request.args.get("q", "")
+
+    sql = """
+        SELECT pc.*, f.name as firm_name, f.website as firm_website,
+               f.focus_sectors as firm_sectors
+        FROM portfolio_companies pc
+        JOIN firms f ON pc.firm_id = f.id
+    """
+    params = []
+    wheres = []
+
+    if firm_id:
+        wheres.append("pc.firm_id = ?")
+        params.append(firm_id)
+    if search:
+        wheres.append("(pc.company_name LIKE ? OR f.name LIKE ? OR pc.sector LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+
+    if wheres:
+        sql += " WHERE " + " AND ".join(wheres)
+
+    sql += " ORDER BY f.name, pc.company_name"
+
+    rows = conn.execute(sql, params).fetchall()
+
+    # Also get aggregates by firm
+    firm_agg = conn.execute("""
+        SELECT f.id, f.name, f.website, f.focus_sectors,
+               COUNT(pc.id) as company_count
+        FROM firms f
+        JOIN portfolio_companies pc ON f.id = pc.firm_id
+        GROUP BY f.id
+        ORDER BY company_count DESC
+    """).fetchall()
+
+    conn.close()
+    return jsonify({
+        "companies": [dict(r) for r in rows],
+        "total": len(rows),
+        "firms": [dict(r) for r in firm_agg],
+    })
+
+
 # ── Background Scraping ──────────────────────────────────────
 
 _scrape_lock = threading.Lock()
@@ -663,9 +711,15 @@ def _run_scrape_background():
 
         from scrapers.news_scraper import run_news_scraper
         from scrapers.alleywatch_scraper import run_alleywatch_scraper
+        from scrapers.firm_scraper import seed_firms
 
-        # Run the main scrapers (skip Google to avoid rate limits,
-        # Bing + RSS + BuiltInNYC + Crunchbase News will run)
+        # Seed firms (including firms.json with 100 firms)
+        try:
+            seed_firms()
+        except Exception as e:
+            logger.warning(f"Firm seeding warning: {e}")
+
+        # Run the main scrapers
         run_news_scraper(days_back=180)
         run_alleywatch_scraper(days_back=180)
 
@@ -684,36 +738,84 @@ def _run_scrape_background():
         _scrape_lock.release()
 
 
+def _run_portfolio_scrape():
+    """Run portfolio scraper in a background thread."""
+    if not _scrape_lock.acquire(blocking=False):
+        return
+    try:
+        _scrape_status["running"] = True
+        _scrape_status["last_run"] = datetime.now().isoformat()
+        logger.info("Portfolio scrape starting...")
+
+        from scrapers.firm_scraper import seed_firms, run_portfolio_scraper
+        seed_firms()
+        run_portfolio_scraper()
+
+        conn = get_connection()
+        pc_count = conn.execute("SELECT COUNT(*) FROM portfolio_companies").fetchone()[0]
+        conn.close()
+
+        _scrape_status["last_result"] = f"Portfolio scrape done. {pc_count} companies."
+        logger.info(f"Portfolio scrape complete: {pc_count} companies")
+
+    except Exception as e:
+        _scrape_status["last_result"] = f"Portfolio error: {e}"
+        logger.error(f"Portfolio scrape failed: {e}")
+    finally:
+        _scrape_status["running"] = False
+        _scrape_lock.release()
+
+
 def _start_scheduler():
-    """Start a background thread that scrapes on startup + every Sunday at 9 PM EST."""
+    """Start background threads: deals on startup + Sunday 9 PM EST, portfolio on Friday 9 PM EST."""
     import time
 
-    def scheduler_loop():
+    def deals_scheduler():
         # Run once on startup after 60s delay
         time.sleep(60)
         _run_scrape_background()
 
-        # Then wait for Sunday 9 PM EST each week
+        # Then wait for Sunday 9 PM EST each week (= Monday 02:00 UTC)
         while True:
             now = datetime.utcnow()
-            # Sunday = 6, 9 PM EST = 02:00 UTC (next day, Monday)
-            # So we target Monday 02:00 UTC = Sunday 9 PM EST
             days_until_monday = (7 - now.weekday()) % 7
             if days_until_monday == 0 and now.hour >= 2:
-                days_until_monday = 7  # already past this week's window
+                days_until_monday = 7
             next_run = now.replace(hour=2, minute=0, second=0, microsecond=0)
             next_run = next_run + timedelta(days=days_until_monday)
             wait_seconds = (next_run - now).total_seconds()
             if wait_seconds < 0:
                 wait_seconds += 7 * 24 * 3600
-            logger.info(f"Next scrape scheduled in {wait_seconds/3600:.1f} hours "
-                        f"(Sunday 9 PM EST / Monday 02:00 UTC)")
+            logger.info(f"Next deal scrape in {wait_seconds/3600:.1f}h (Sunday 9 PM EST)")
             time.sleep(wait_seconds)
             _run_scrape_background()
 
-    t = threading.Thread(target=scheduler_loop, daemon=True)
-    t.start()
-    logger.info("Background scraper scheduled: startup + every Sunday 9 PM EST")
+    def portfolio_scheduler():
+        # Run portfolio scrape on startup after 120s delay (after deals scrape starts)
+        time.sleep(120)
+        _run_portfolio_scrape()
+
+        # Then every Friday 9 PM EST (= Saturday 02:00 UTC)
+        while True:
+            now = datetime.utcnow()
+            # Saturday = 5 in weekday()
+            days_until_saturday = (5 - now.weekday()) % 7
+            if days_until_saturday == 0 and now.hour >= 2:
+                days_until_saturday = 7
+            next_run = now.replace(hour=2, minute=0, second=0, microsecond=0)
+            next_run = next_run + timedelta(days=days_until_saturday)
+            wait_seconds = (next_run - now).total_seconds()
+            if wait_seconds < 0:
+                wait_seconds += 7 * 24 * 3600
+            logger.info(f"Next portfolio scrape in {wait_seconds/3600:.1f}h (Friday 9 PM EST)")
+            time.sleep(wait_seconds)
+            _run_portfolio_scrape()
+
+    t1 = threading.Thread(target=deals_scheduler, daemon=True)
+    t1.start()
+    t2 = threading.Thread(target=portfolio_scheduler, daemon=True)
+    t2.start()
+    logger.info("Scheduled: deals (startup + Sunday 9 PM EST), portfolio (startup + Friday 9 PM EST)")
 
 
 @app.route("/api/scrape", methods=["POST"])

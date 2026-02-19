@@ -74,8 +74,10 @@
       const [stats, setStats] = useState(null);
       const [firms, setFirms] = useState([]);
       const [investors, setInvestors] = useState([]);
+      const [portfolio, setPortfolio] = useState({companies:[], firms:[], total:0});
       const [loading, setLoading] = useState(true);
       const [view, setView] = useState("grid");
+      const [selPortFirm, setSelPortFirm] = useState(null);
       const [q, setQ] = useState("");
       const [stgF, setStgF] = useState("All");
       const [catF, setCatF] = useState("All");
@@ -93,11 +95,13 @@
           fetch("/api/stats").then(r=>r.json()),
           fetch("/api/firms").then(r=>r.json()),
           fetch("/api/investors").then(r=>r.json()),
-        ]).then(([feed, st, fi, inv]) => {
+          fetch("/api/portfolio").then(r=>r.json()),
+        ]).then(([feed, st, fi, inv, port]) => {
           setDeals(feed.deals || []);
           setStats(st);
           setFirms(fi || []);
           setInvestors(inv || []);
+          setPortfolio(port || {companies:[], firms:[], total:0});
           setLoading(false);
         }).catch(e => {
           console.error("API fetch failed:", e);
@@ -200,8 +204,8 @@
               {q && <button onClick={()=>setQ("")} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",color:"#555",fontSize:12}}>✕</button>}
             </div>
             <div style={{display:"flex",gap:1,background:"#141520",borderRadius:5,padding:2}}>
-              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"}].map(t=>
-                <button key={t.id} onClick={()=>{setView(t.id);if(t.id!=="firms")setSelFirm(null);setSelCat(null);}}
+              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"portfolio",l:"◈ Portfolio"}].map(t=>
+                <button key={t.id} onClick={()=>{setView(t.id);if(t.id!=="firms")setSelFirm(null);setSelCat(null);if(t.id!=="portfolio")setSelPortFirm(null);}}
                   className={`tab ${view===t.id?"on":""}`}>{t.l}</button>
               )}
             </div>
@@ -427,11 +431,85 @@
                 })() : <div className="empty"><div><div style={{fontSize:32,marginBottom:6}}>◧</div><div style={{fontSize:13}}>Select a sector</div></div></div>}
               </div>
             </div>}
+
+            {/* ── PORTFOLIO ── */}
+            {view==="portfolio" && <div style={{flex:1,display:"flex",overflow:"hidden"}} className="fu">
+              <div style={{width:340,borderRight:"1px solid #191a2e",overflow:"auto",flexShrink:0}}>
+                <div style={{padding:"12px 16px",borderBottom:"1px solid #191a2e"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#555",textTransform:"uppercase",letterSpacing:1}}>Firms ({portfolio.firms.length})</div>
+                  <div style={{fontSize:10,color:"#3d3e55",marginTop:2}}>Portfolio companies scraped from VC websites</div>
+                </div>
+                {portfolio.firms.map(f => {
+                  const on = selPortFirm === f.id;
+                  const sectors = f.focus_sectors ? (() => { try { return JSON.parse(f.focus_sectors); } catch(e) { return []; }})() : [];
+                  return <div key={f.id} onClick={() => setSelPortFirm(on ? null : f.id)}
+                    className={`sidebar-item ${on ? "on" : ""}`} style={{borderLeft:`3px solid ${on ? "#a78bfa" : "transparent"}`}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                      <span style={{fontWeight:600,color:on?"#c4b5fd":"#ddd",fontSize:12.5}}>{f.name}</span>
+                      <span className="mono purple" style={{fontSize:12,fontWeight:700}}>{f.company_count}</span>
+                    </div>
+                    <div style={{display:"flex",gap:2,flexWrap:"wrap"}}>
+                      {sectors.slice(0,3).map(s => <span key={s} style={{fontSize:9,padding:"1px 5px",borderRadius:2,background:"#1e1f35",color:"#777"}}>{s}</span>)}
+                    </div>
+                  </div>;
+                })}
+                {portfolio.firms.length === 0 && <div className="empty" style={{padding:40,fontSize:12}}>No portfolio data yet — scraper runs Fridays 9 PM EST</div>}
+              </div>
+              <div style={{flex:1,overflow:"auto",padding:0}}>
+                {(() => {
+                  const filtered = selPortFirm
+                    ? portfolio.companies.filter(c => c.firm_id === selPortFirm)
+                    : portfolio.companies.filter(c => !q || (c.company_name||"").toLowerCase().includes(q.toLowerCase()) || (c.firm_name||"").toLowerCase().includes(q.toLowerCase()));
+                  const searchFiltered = q && !selPortFirm
+                    ? filtered
+                    : filtered;
+                  const firmName = selPortFirm ? (portfolio.firms.find(f=>f.id===selPortFirm)||{}).name : null;
+                  return <>
+                    {firmName && <div style={{padding:"12px 20px",borderBottom:"1px solid #191a2e",background:"#0e0f18"}}>
+                      <div style={{fontSize:16,fontWeight:700,color:"#eee"}}>{firmName}</div>
+                      <div style={{fontSize:11,color:"#555",marginTop:2}}>{searchFiltered.length} portfolio companies</div>
+                    </div>}
+                    <table style={{fontSize:12}}>
+                      <thead><tr>
+                        <th style={{cursor:"default"}}>Company</th>
+                        {!selPortFirm && <th style={{cursor:"default"}}>Firm</th>}
+                        <th style={{cursor:"default"}}>Sector</th>
+                        <th style={{cursor:"default"}}>Lead Partner</th>
+                        <th style={{cursor:"default"}}>Website</th>
+                      </tr></thead>
+                      <tbody>
+                        {searchFiltered.map((c, i) =>
+                          <tr key={c.id || i} className={i % 2 === 0 ? "stripe" : ""}>
+                            <td><div style={{fontWeight:600,color:"#eee"}}>{c.company_name}</div>
+                              {c.description && <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,maxWidth:300,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.description}</div>}
+                            </td>
+                            {!selPortFirm && <td><span style={{color:"#a78bfa",fontSize:11.5,fontWeight:500}}>{c.firm_name}</span></td>}
+                            <td style={{color:"#777",fontSize:11}}>{c.sector || "—"}</td>
+                            <td style={{color:"#888",fontSize:11}}>{c.lead_partner || "—"}</td>
+                            <td>{c.company_website && c.company_website !== c.source_url
+                              ? <a href={c.company_website} target="_blank" rel="noopener" style={{color:"#6366f1",fontSize:11,textDecoration:"none"}}>
+                                  {c.company_website.replace(/https?:\/\/(www\.)?/,"").replace(/\/$/,"").slice(0,30)}
+                                </a>
+                              : <span className="muted">—</span>}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                    {searchFiltered.length === 0 && <div className="empty" style={{padding:60}}>
+                      {portfolio.total === 0
+                        ? <div>No portfolio data yet — scraper runs on Fridays at 9 PM EST</div>
+                        : <div>No companies match — <button className="link" onClick={()=>{setSelPortFirm(null);setQ("");}}>clear filters</button></div>}
+                    </div>}
+                  </>;
+                })()}
+              </div>
+            </div>}
           </div>
 
           {/* Footer */}
           <div className="mono" style={{padding:"6px 20px",borderTop:"1px solid #191a2e",display:"flex",justifyContent:"space-between",background:"#0c0d13",fontSize:10,color:"#33344a"}}>
-            <span>{rows.length}/{deals.length} deals · {$(totCap)} · {firmAgg.length} firms · {investors.length} partners</span>
+            <span>{rows.length}/{deals.length} deals · {$(totCap)} · {firmAgg.length} firms · {investors.length} partners · {portfolio.total} portfolio cos</span>
             <span>Live from API · AlleyWatch · SEC EDGAR · Crunchbase · News · Delaware Corps</span>
           </div>
         </div>

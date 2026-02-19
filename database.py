@@ -184,6 +184,22 @@ def init_db(db_path: str = DB_PATH):
         error_message TEXT
     );
 
+    -- Portfolio companies scraped from firm websites
+    CREATE TABLE IF NOT EXISTS portfolio_companies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        firm_id INTEGER NOT NULL,
+        company_name TEXT NOT NULL,
+        company_website TEXT,
+        description TEXT,
+        lead_partner TEXT,
+        sector TEXT,
+        source_url TEXT,
+        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (firm_id) REFERENCES firms(id),
+        UNIQUE(firm_id, company_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_portfolio_firm ON portfolio_companies(firm_id);
+
     -- Seed default categories
     INSERT OR IGNORE INTO categories (name) VALUES
         ('Fintech'),
@@ -313,6 +329,33 @@ def link_deal_investor(conn, deal_id: int, investor_id: int):
     )
     if not _is_batch(conn):
         conn.commit()
+
+
+def upsert_portfolio_company(conn, firm_id: int, company_name: str, **kwargs) -> int:
+    """Insert or update a portfolio company, return its ID."""
+    existing = conn.execute(
+        "SELECT id FROM portfolio_companies WHERE firm_id = ? AND company_name = ?",
+        (firm_id, company_name)
+    ).fetchone()
+    if existing:
+        if kwargs:
+            sets = ", ".join(f"{k} = ?" for k in kwargs)
+            conn.execute(
+                f"UPDATE portfolio_companies SET {sets} WHERE id = ?",
+                (*kwargs.values(), existing["id"])
+            )
+            if not _is_batch(conn):
+                conn.commit()
+        return existing["id"]
+    cols = ["firm_id", "company_name"] + list(kwargs.keys())
+    vals = [firm_id, company_name] + list(kwargs.values())
+    placeholders = ", ".join(["?"] * len(vals))
+    cur = conn.execute(
+        f"INSERT INTO portfolio_companies ({', '.join(cols)}) VALUES ({placeholders})", vals
+    )
+    if not _is_batch(conn):
+        conn.commit()
+    return cur.lastrowid
 
 
 def get_category_id(conn, name: str) -> Optional[int]:

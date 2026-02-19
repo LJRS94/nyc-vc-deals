@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 
 from database import (
     get_connection, batch_connection, upsert_firm, insert_deal, link_deal_firm,
-    log_scrape, finish_scrape, get_category_id
+    log_scrape, finish_scrape, get_category_id, upsert_portfolio_company
 )
 from fetcher import fetch
 
@@ -163,6 +163,209 @@ NYC_VC_FIRMS = [
         "focus_stages": '["Seed","Series A","Series B"]',
         "focus_sectors": '["Regulated Industries","Fintech","Health","Transport"]',
     },
+    {
+        "name": "Betaworks",
+        "website": "https://www.betaworks.com",
+        "portfolio_url": "https://www.betaworks.com/companies",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["AI","Consumer","Media"]',
+    },
+    {
+        "name": "Founder Collective",
+        "website": "https://www.foundercollective.com",
+        "portfolio_url": "https://www.foundercollective.com/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["SaaS","Consumer","Fintech"]',
+    },
+    {
+        "name": "Collaborative Fund",
+        "website": "https://www.collaborativefund.com",
+        "portfolio_url": "https://www.collaborativefund.com/portfolio",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["Climate","Food","Health","Consumer"]',
+    },
+    {
+        "name": "IA Ventures",
+        "website": "https://www.iaventures.com",
+        "portfolio_url": "https://www.iaventures.com/portfolio",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["AI","Data","Fintech"]',
+    },
+    {
+        "name": "Eniac Ventures",
+        "website": "https://www.eniac.vc",
+        "portfolio_url": "https://www.eniac.vc/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["AI","SaaS","Consumer"]',
+    },
+    {
+        "name": "Harlem Capital",
+        "website": "https://www.harlemcapital.com",
+        "portfolio_url": "https://www.harlemcapital.com/portfolio",
+        "focus_stages": '["Pre-Seed","Seed","Series A"]',
+        "focus_sectors": '["Consumer","Health","Fintech","SaaS"]',
+    },
+    {
+        "name": "BBG Ventures",
+        "website": "https://www.bbgventures.com",
+        "portfolio_url": "https://www.bbgventures.com/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["Consumer","Health","Fintech"]',
+    },
+    {
+        "name": "645 Ventures",
+        "website": "https://www.645ventures.com",
+        "portfolio_url": "https://www.645ventures.com/portfolio",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["SaaS","Enterprise","AI"]',
+    },
+    {
+        "name": "Ground Up Ventures",
+        "website": "https://www.groundup.vc",
+        "portfolio_url": "https://www.groundup.vc/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["SaaS","Fintech","AI"]',
+    },
+    {
+        "name": "Crossbeam Venture Partners",
+        "website": "https://www.crossbeamvp.com",
+        "portfolio_url": "https://www.crossbeamvp.com/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["SaaS","Fintech","Enterprise"]',
+    },
+    {
+        "name": "Bling Capital",
+        "website": "https://www.blingcap.com",
+        "portfolio_url": "https://www.blingcap.com/portfolio",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["Consumer","SaaS","AI"]',
+    },
+    {
+        "name": "K5 Global",
+        "website": "https://www.k5global.com",
+        "portfolio_url": "https://www.k5global.com",
+        "focus_stages": '["Seed","Series A","Series B"]',
+        "focus_sectors": '["AI","Consumer","Enterprise"]',
+    },
+    {
+        "name": "Boldstart Ventures",
+        "website": "https://www.boldstart.vc",
+        "portfolio_url": "https://www.boldstart.vc/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["Developer Tools","SaaS","Cybersecurity"]',
+    },
+    {
+        "name": "High Line Venture Partners",
+        "website": "https://www.hlvp.com",
+        "portfolio_url": "https://www.hlvp.com/portfolio",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["Fintech","SaaS","AI"]',
+    },
+    {
+        "name": "Newark Venture Partners",
+        "website": "https://www.newarkventurepartners.com",
+        "portfolio_url": "https://www.newarkventurepartners.com/portfolio",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["SaaS","Fintech","Health"]',
+    },
+    {
+        "name": "Brooklyn Bridge Ventures",
+        "website": "https://www.brooklynbridge.vc",
+        "portfolio_url": "https://www.brooklynbridge.vc/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["Consumer","SaaS","Health"]',
+    },
+    {
+        "name": "Gutter Capital",
+        "website": "https://www.guttercapital.com",
+        "portfolio_url": "https://www.guttercapital.com",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["SaaS","Consumer","AI"]',
+    },
+    {
+        "name": "Vast Ventures",
+        "website": "https://www.vast.vc",
+        "portfolio_url": "https://www.vast.vc/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["AI","SaaS","Fintech"]',
+    },
+    {
+        "name": "Human Ventures",
+        "website": "https://www.humanventures.co",
+        "portfolio_url": "https://www.humanventures.co/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["Health","Consumer","Education"]',
+    },
+    {
+        "name": "Interplay",
+        "website": "https://www.interplay.vc",
+        "portfolio_url": "https://www.interplay.vc/portfolio",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["SaaS","Enterprise","Fintech"]',
+    },
+    {
+        "name": "Company Ventures",
+        "website": "https://www.companyventures.co",
+        "portfolio_url": "https://www.companyventures.co/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["Consumer","SaaS","Marketplace"]',
+    },
+    {
+        "name": "Corigin Ventures",
+        "website": "https://www.corigin.com",
+        "portfolio_url": "https://www.corigin.com/ventures",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["Real Estate","SaaS","Fintech"]',
+    },
+    {
+        "name": "NextView Ventures",
+        "website": "https://www.nextviewventures.com",
+        "portfolio_url": "https://www.nextviewventures.com/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["Consumer","SaaS","Marketplace"]',
+    },
+    {
+        "name": "m]x[v",
+        "website": "https://www.mxv.vc",
+        "portfolio_url": "https://www.mxv.vc/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["SaaS","Consumer","AI"]',
+    },
+    {
+        "name": "Precursor Ventures",
+        "website": "https://www.precursorvc.com",
+        "portfolio_url": "https://www.precursorvc.com/portfolio",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["SaaS","Consumer","Fintech"]',
+    },
+    {
+        "name": "Techstars NYC",
+        "website": "https://www.techstars.com",
+        "portfolio_url": "https://www.techstars.com/portfolio?city=new-york",
+        "focus_stages": '["Pre-Seed","Seed"]',
+        "focus_sectors": '["AI","SaaS","Consumer","Fintech"]',
+    },
+    {
+        "name": "Kauffman Fellows Fund",
+        "website": "https://www.kauffmanfellows.org",
+        "portfolio_url": "https://www.kauffmanfellows.org",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["SaaS","Health","Fintech"]',
+    },
+    {
+        "name": "XYZ Venture Capital",
+        "website": "https://www.xyzvc.com",
+        "portfolio_url": "https://www.xyzvc.com/portfolio",
+        "focus_stages": '["Pre-Seed","Seed","Series A"]',
+        "focus_sectors": '["SaaS","Consumer","Fintech","AI"]',
+    },
+    {
+        "name": "Slow Ventures",
+        "website": "https://www.slow.co",
+        "portfolio_url": "https://www.slow.co/portfolio",
+        "focus_stages": '["Seed","Series A"]',
+        "focus_sectors": '["Consumer","SaaS","AI","Media"]',
+    },
 ]
 
 
@@ -181,10 +384,18 @@ def seed_firms():
             upsert_firm(conn, name, **firm_data)
             firm_data["name"] = name  # restore
         for firm_data in extra:
-            name = firm_data.pop("name")
-            kwargs = {k: v for k, v in firm_data.items() if v is not None}
+            name = firm_data.get("name")
+            if not name:
+                continue
+            kwargs = {}
+            if firm_data.get("website"):
+                kwargs["website"] = firm_data["website"]
+            if firm_data.get("portfolio_url"):
+                kwargs["portfolio_url"] = firm_data["portfolio_url"]
+            # Map "focus" array to "focus_sectors" JSON string
+            if firm_data.get("focus"):
+                kwargs["focus_sectors"] = json.dumps(firm_data["focus"])
             upsert_firm(conn, name, **kwargs)
-            firm_data["name"] = name
     total = len(NYC_VC_FIRMS) + len(extra)
     logger.info(f"Seeded {total} NYC VC firms ({len(NYC_VC_FIRMS)} built-in + {len(extra)} from firms.json)")
 
@@ -202,7 +413,6 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
         soup = BeautifulSoup(resp.text, "html.parser")
 
         # Strategy 1: Look for common portfolio card patterns
-        # Many VC sites use cards/grid items with company info
         selectors = [
             "div.portfolio-company", "div.company-card", "article.portfolio",
             "div.portfolio-item", "li.portfolio", "div[class*='portfolio']",
@@ -255,10 +465,31 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
                 if href and href.startswith("/"):
                     href = urljoin(portfolio_url, href)
 
+                # Extract lead partner if mentioned
+                lead_partner = None
+                partner_patterns = [
+                    card.find(string=re.compile(r"(?:Partner|Lead|Board):\s*(.+)", re.I)),
+                    card.find(["span", "div"], class_=re.compile(r"partner|lead|board", re.I)),
+                ]
+                for pp in partner_patterns:
+                    if pp:
+                        ptext = pp.get_text(strip=True) if hasattr(pp, 'get_text') else str(pp)
+                        m = re.search(r"(?:Partner|Lead|Board):\s*(.+)", ptext, re.I)
+                        lead_partner = m.group(1).strip() if m else ptext.strip()
+                        break
+
+                # Extract sector if mentioned
+                sector = None
+                sector_el = card.find(["span", "div"], class_=re.compile(r"sector|category|industry|tag", re.I))
+                if sector_el:
+                    sector = sector_el.get_text(strip=True)
+
                 results.append({
                     "company_name": name,
                     "company_website": href,
-                    "company_description": desc,
+                    "description": desc,
+                    "lead_partner": lead_partner,
+                    "sector": sector,
                     "source_url": portfolio_url,
                 })
 
@@ -325,6 +556,65 @@ def scrape_firm_news(firm_name: str, website: str) -> List[Dict]:
     return results
 
 
+def run_portfolio_scraper():
+    """Scrape portfolio pages of top early-stage NYC VCs and store companies in DB."""
+    import time
+
+    conn = get_connection()
+    log_id = log_scrape(conn, "portfolio_scraper")
+    total_found = 0
+    total_new = 0
+
+    try:
+        # Get all firms with portfolio URLs
+        firms = conn.execute(
+            "SELECT id, name, portfolio_url FROM firms WHERE portfolio_url IS NOT NULL"
+        ).fetchall()
+
+        for firm in firms:
+            firm_id = firm["id"]
+            firm_name = firm["name"]
+            portfolio_url = firm["portfolio_url"]
+
+            if not portfolio_url:
+                continue
+
+            companies = scrape_firm_portfolio(firm_name, portfolio_url)
+            total_found += len(companies)
+
+            for co in companies:
+                kwargs = {}
+                if co.get("company_website"):
+                    kwargs["company_website"] = co["company_website"]
+                if co.get("description"):
+                    kwargs["description"] = co["description"]
+                if co.get("lead_partner"):
+                    kwargs["lead_partner"] = co["lead_partner"]
+                if co.get("sector"):
+                    kwargs["sector"] = co["sector"]
+                if co.get("source_url"):
+                    kwargs["source_url"] = co["source_url"]
+
+                try:
+                    pid = upsert_portfolio_company(conn, firm_id, co["company_name"], **kwargs)
+                    if pid:
+                        total_new += 1
+                except Exception as e:
+                    logger.warning(f"Failed to store portfolio company {co['company_name']}: {e}")
+
+            # Brief delay between firms to be polite
+            time.sleep(2)
+
+        conn.commit()
+        finish_scrape(conn, log_id, "success", total_found, total_new)
+        logger.info(f"Portfolio scraper: found {total_found} companies, stored {total_new}")
+    except Exception as e:
+        finish_scrape(conn, log_id, "error", error_message=str(e))
+        logger.error(f"Portfolio scraper error: {e}")
+    finally:
+        conn.close()
+
+
 def run_firm_scraper():
     """Main entry point: scrape all firm websites."""
     conn = get_connection()
@@ -339,16 +629,34 @@ def run_firm_scraper():
             portfolio_url = firm["portfolio_url"]
             website = firm["website"]
 
-            # Scrape portfolio page
+            # Scrape portfolio page and store in portfolio_companies table
             if portfolio_url:
                 companies = scrape_firm_portfolio(firm_name, portfolio_url)
                 total_found += len(companies)
+                for co in companies:
+                    kwargs = {}
+                    if co.get("company_website"):
+                        kwargs["company_website"] = co["company_website"]
+                    if co.get("description"):
+                        kwargs["description"] = co["description"]
+                    if co.get("lead_partner"):
+                        kwargs["lead_partner"] = co["lead_partner"]
+                    if co.get("sector"):
+                        kwargs["sector"] = co["sector"]
+                    if co.get("source_url"):
+                        kwargs["source_url"] = co["source_url"]
+                    try:
+                        upsert_portfolio_company(conn, firm["id"], co["company_name"], **kwargs)
+                        total_new += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to store {co['company_name']}: {e}")
 
             # Scrape news page
             if website:
                 news = scrape_firm_news(firm_name, website)
                 total_found += len(news)
 
+        conn.commit()
         finish_scrape(conn, log_id, "success", total_found, total_new)
     except Exception as e:
         finish_scrape(conn, log_id, "error", error_message=str(e))
