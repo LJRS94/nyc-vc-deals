@@ -54,9 +54,10 @@ def get_deal_feed():
         LIMIT ?
     """, params + [FEED_MAX_RESULTS]).fetchall()
 
-    # Batch-fetch investors for all deals (richer data than GROUP_CONCAT)
+    # Batch-fetch investors and verification status for all deals
     deal_ids = [r["id"] for r in rows]
     investors_by_deal = {}
+    verified_firms_by_deal = {}
     if deal_ids:
         ph = ",".join(["?"] * len(deal_ids))
         for ir in conn.execute(f"""
@@ -71,6 +72,14 @@ def get_deal_feed():
                 "id": ir["investor_id"], "name": ir["name"],
                 "title": ir["title"], "firm": ir["firm_name"],
             })
+        for vr in conn.execute(f"""
+            SELECT df.deal_id, f.name as firm_name
+            FROM deal_firms df
+            JOIN firms f ON df.firm_id = f.id
+            WHERE df.deal_id IN ({ph}) AND df.verified = 1
+        """, deal_ids).fetchall():
+            verified_firms_by_deal.setdefault(vr["deal_id"], []).append(
+                vr["firm_name"])
 
     deals = []
     for r in rows:
@@ -98,6 +107,7 @@ def get_deal_feed():
             "firms": [x for x in (r["firms"] or "").split(",") if x],
             "lead_firms": [x for x in (r["lead_firms"] or "").split(",") if x],
             "investors": investors_by_deal.get(r["id"], []),
+            "verified_firms": verified_firms_by_deal.get(r["id"], []),
             "founders": founders,
             "total_raised": total_raised,
         })

@@ -30,6 +30,7 @@ from routes.deals import deals_bp
 from routes.firms import firms_bp
 from routes.feed import feed_bp
 from routes.qc import qc_bp
+from routes.verified import verified_bp
 
 app = Flask(__name__)
 CORS(app)
@@ -47,6 +48,7 @@ app.register_blueprint(deals_bp)
 app.register_blueprint(firms_bp)
 app.register_blueprint(feed_bp)
 app.register_blueprint(qc_bp)
+app.register_blueprint(verified_bp)
 
 
 # ── Global JSON error handlers ──
@@ -501,6 +503,18 @@ def _run_portfolio_scrape():
 
         conn = get_connection()
         pc_count = conn.execute("SELECT COUNT(*) FROM portfolio_companies").fetchone()[0]
+
+        # Auto-verify deal-firm links against portfolio data
+        try:
+            from routes.verified import run_portfolio_verification
+            vresult = run_portfolio_verification(conn)
+            logger.info(
+                f"Portfolio verification: {vresult['verified']} verified, "
+                f"{vresult['inserted']} new links"
+            )
+        except Exception as e:
+            logger.warning(f"Portfolio verification warning: {e}")
+
         conn.close()
 
         _scrape_status["last_result"] = f"Portfolio scrape done. {pc_count} companies."

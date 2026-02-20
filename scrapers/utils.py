@@ -399,9 +399,7 @@ def parse_investors(text: str) -> Tuple[List[str], Optional[str]]:
         if inv and len(inv) > 1 and not inv.lower().startswith(("including", "with", "from")):
             investors.append(inv)
 
-    if not lead and investors:
-        lead = investors[0]
-
+    # Only assign lead if explicitly stated with "led by" — don't guess
     return investors, lead
 
 

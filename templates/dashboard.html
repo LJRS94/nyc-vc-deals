@@ -382,6 +382,7 @@
       const [sectorTrends, setSectorTrends] = useState([]);
       const [qcAudit, setQcAudit] = useState(null);
       const [qcRejections, setQcRejections] = useState(null);
+      const [verifiedData, setVerifiedData] = useState(null);
 
       /* Fetch data from API */
       useEffect(() => {
@@ -449,6 +450,13 @@
           });
         }
       }, [view, insightsLoaded]);
+
+      /* Lazy-load verified data */
+      useEffect(() => {
+        if (view === "verified" && !verifiedData) {
+          fetch("/api/verified").then(r=>r.json()).then(d=>setVerifiedData(d)).catch(()=>{});
+        }
+      }, [view, verifiedData]);
 
       /* Toggle bookmark */
       const toggleSave = useCallback((dealId, e) => {
@@ -657,7 +665,7 @@
               {qBuf && <button onClick={()=>{setQBuf("");setQ("");}} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",color:"#555",fontSize:12}}>✕</button>}
             </div>
             <div style={{display:"flex",gap:1,background:"#141520",borderRadius:5,padding:2}}>
-              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"insights",l:"◉ Insights"},{id:"portfolio",l:"◈ Portfolio"},{id:"qc",l:"⊘ Quality"},
+              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"insights",l:"◉ Insights"},{id:"portfolio",l:"◈ Portfolio"},{id:"verified",l:"✓ Verified"},{id:"qc",l:"⊘ Quality"},
                 ...(user ? [{id:"saved",l:"★ Saved"}] : [])
               ].map(t=>
                 <button key={t.id} onClick={()=>{setView(t.id);if(t.id!=="firms"){setSelFirm(null);setFirmProfile(null);}setSelCat(null);if(t.id!=="portfolio")setSelPortFirm(null);if(t.id==="saved")setSelFolder(null);}}
@@ -788,8 +796,9 @@
                           <div style={{color:"#999",lineHeight:1.6}}>{d.description}</div>
                           {d.founders && <div style={{marginTop:6,color:"#777"}}>Founded by <span style={{color:"#bbb"}}>{d.founders}</span></div>}</div>
                         <div><div className="kpi-label" style={{marginBottom:5}}>Firms</div>
-                          {(d.firms||[]).map((f,j)=>{const fn=typeof f==="string"?f:f.name;const isLead=(d.lead_firms||[]).includes(fn);
-                            return <div key={j}><button className="link" onClick={()=>goFirm(fn)} style={{fontSize:11.5,fontWeight:isLead?600:400,color:isLead?"#a78bfa":"#777"}}>{isLead?"★ ":"  "}{fn}</button></div>;})}
+                          {(d.firms||[]).map((f,j)=>{const fn=typeof f==="string"?f:f.name;const isLead=(d.lead_firms||[]).includes(fn);const isV=(d.verified_firms||[]).includes(fn);
+                            return <div key={j}><button className="link" onClick={()=>goFirm(fn)} style={{fontSize:11.5,fontWeight:isLead?600:400,color:isLead?"#a78bfa":"#777"}}>{isLead?"★ ":"  "}{fn}</button>
+                              {isV && <span title="Confirmed on firm website" style={{color:"#34d399",fontSize:9,marginLeft:4}}>✓ verified</span>}</div>;})}
                           {!(d.firms||[]).length && <span className="muted">Undisclosed</span>}
                           {(d.investors||[]).length>0 && <div className="kpi-label" style={{marginTop:8,marginBottom:5}}>Partners</div>}
                           {(d.investors||[]).map((p,j)=><div key={j} style={{marginBottom:2}}>
@@ -1435,6 +1444,72 @@
               </div>
             </div>}
 
+            {/* ── VERIFIED (Portfolio Verification) ── */}
+            {view==="verified" && <div style={{flex:1,overflow:"auto",padding:20}} className="fu">
+              {verifiedData ? <div>
+                <div style={{display:"flex",gap:14,marginBottom:20,flexWrap:"wrap"}}>
+                  <div className="kpi"><div className="kpi-label">Verified Links</div>
+                    <div className="kpi-val mono green">{verifiedData.stats.verified_links}</div></div>
+                  <div className="kpi"><div className="kpi-label">Verification Rate</div>
+                    <div className="kpi-val mono" style={{color:verifiedData.stats.verification_rate>=15?"#34d399":verifiedData.stats.verification_rate>=5?"#f59e0b":"#ef4444"}}>
+                      {verifiedData.stats.verification_rate}%</div></div>
+                  <div className="kpi"><div className="kpi-label">Deals Verified</div>
+                    <div className="kpi-val mono" style={{color:"#a78bfa"}}>{verifiedData.stats.deals_with_verification}</div></div>
+                  <div className="kpi"><div className="kpi-label">Portfolio Cos</div>
+                    <div className="kpi-val mono" style={{color:"#eee"}}>{verifiedData.stats.portfolio_companies.toLocaleString()}</div></div>
+                  <div className="kpi"><div className="kpi-label">Portfolio Firms</div>
+                    <div className="kpi-val mono" style={{color:"#eee"}}>{verifiedData.stats.portfolio_firms}</div></div>
+                  <div className="kpi"><div className="kpi-label">Unverified</div>
+                    <div className="kpi-val mono" style={{color:"#ef4444"}}>{verifiedData.stats.unverified_links}</div></div>
+                </div>
+
+                <div style={{marginBottom:20}}>
+                  <div className="kpi-label" style={{marginBottom:8,fontSize:11}}>Firms with Verified Links</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {verifiedData.firm_stats.map(f =>
+                      <div key={f.id} style={{background:"#101118",border:"1px solid #191a2e",borderRadius:5,padding:"8px 14px",cursor:"pointer"}}
+                        onClick={()=>{setSelFirm(f.id);setView("firms");}}>
+                        <div style={{fontSize:11,fontWeight:600,color:"#ddd"}}>{f.name}</div>
+                        <div style={{display:"flex",gap:10,marginTop:3}}>
+                          <span className="mono" style={{fontSize:13,fontWeight:700,color:"#34d399"}}>{f.verified_links} <span style={{fontSize:9,color:"#555"}}>verified</span></span>
+                          <span className="mono" style={{fontSize:13,color:"#555"}}>{f.total_links} <span style={{fontSize:9}}>total</span></span>
+                          <span className="mono" style={{fontSize:13,color:"#444"}}>{f.portfolio_count} <span style={{fontSize:9}}>portfolio</span></span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="kpi-label" style={{marginBottom:8,fontSize:11}}>Verified Deals ({verifiedData.verified_deals.length})</div>
+                <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+                  <th style={{cursor:"default"}}>Company</th>
+                  <th style={{cursor:"default",textAlign:"right"}}>Amount</th>
+                  <th style={{cursor:"default"}}>Stage</th>
+                  <th style={{cursor:"default"}}>Sector</th>
+                  <th style={{cursor:"default"}}>Verified Firms</th>
+                  <th style={{cursor:"default",textAlign:"right"}}>Conf</th>
+                </tr></thead><tbody>
+                  {verifiedData.verified_deals.map((d, i) =>
+                    <tr key={d.deal_id} className={i%2?"":"stripe"}>
+                      <td style={{fontWeight:600,color:"#eee"}}>{d.company_name}</td>
+                      <td style={{textAlign:"right"}} className="mono green">{$(d.amount_usd)}</td>
+                      <td><Badge t={d.stage} c={SC[d.stage]} /></td>
+                      <td style={{color:CC[d.category],fontSize:11}}>{d.category||"—"}</td>
+                      <td>{d.verified_firms.map((f,j)=>
+                        <span key={j}>
+                          <button className="link" onClick={()=>{setSelFirm(f.firm_id);setView("firms");}} style={{fontSize:11}}>{f.firm_name}</button>
+                          {f.role==="lead" && <span style={{color:"#a78bfa",fontSize:9,marginLeft:2}}>lead</span>}
+                          {j<d.verified_firms.length-1 && <span style={{color:"#333",margin:"0 4px"}}>·</span>}
+                        </span>
+                      )}</td>
+                      <td style={{textAlign:"right"}} className="mono" style={{color:(d.confidence_score||0)>=.85?"#34d399":"#f59e0b",textAlign:"right",fontSize:11}}>
+                        {d.confidence_score?`${(d.confidence_score*100).toFixed(0)}%`:"—"}</td>
+                    </tr>
+                  )}
+                </tbody></table>
+              </div> : <div className="empty" style={{padding:60}}><div>Loading verification data...</div></div>}
+            </div>}
+
             {/* ── DATA QUALITY ── */}
             {view==="qc" && <div style={{flex:1,overflow:"auto",padding:20}} className="fu">
               {qcAudit ? <div>
@@ -1556,7 +1631,7 @@
 
           {/* Footer */}
           <div className="mono" style={{padding:"6px 20px",borderTop:"1px solid #191a2e",display:"flex",justifyContent:"space-between",background:"#0c0d13",fontSize:10,color:"#33344a",flexWrap:"wrap",gap:4}}>
-            <span>{rows.length}/{deals.length} deals · {$(totCap)} · {firms.length} firms · {investors.length} partners · {portfolio.total} portfolio cos</span>
+            <span>{rows.length}/{deals.length} deals · {$(totCap)} · {firms.length} firms · {investors.length} partners · {portfolio.total} portfolio cos{verifiedData ? ` · ${verifiedData.stats.verified_links} verified` : ""}</span>
             <span>{stats && stats.last_updated ? `Updated ${stats.last_updated.slice(0,10)}` : ""} · AlleyWatch · SEC EDGAR · Crunchbase · News</span>
           </div>
         </div>
