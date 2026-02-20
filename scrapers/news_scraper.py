@@ -50,16 +50,16 @@ def detect_stage(text: str) -> str:
 
 def extract_amount(text: str, title: str = "") -> Optional[float]:
     """Extract funding amount, preferring the title over full body text.
-    Caps at $10B — amounts above that are almost certainly parsing artifacts."""
-    MAX_DEAL = 10_000_000_000  # $10B
+    Caps at MAX_DEAL_AMOUNT — amounts above that are almost certainly parsing artifacts."""
+    from config import MAX_DEAL_AMOUNT
     # Try title first (much more reliable)
     if title:
         amt = _parse_amount(title)
-        if amt and amt <= MAX_DEAL:
+        if amt and amt <= MAX_DEAL_AMOUNT:
             return amt
     # Fall back to first 500 chars of body (the lede paragraph)
     amt = _parse_amount(text[:500])
-    if amt and amt <= MAX_DEAL:
+    if amt and amt <= MAX_DEAL_AMOUNT:
         return amt
     return None
 
@@ -84,6 +84,7 @@ FUNDING_KEYWORDS = [
 # ── Publication RSS Feeds ─────────────────────────────────────
 
 PUBLICATION_FEEDS = [
+    ("TechCrunch Fundings & Exits", "https://techcrunch.com/fundings-exits/feed/"),
     ("TechCrunch Venture", "https://techcrunch.com/category/venture/feed/"),
     ("TechCrunch Funding", "https://techcrunch.com/tag/funding/feed/"),
     ("TechCrunch Startups", "https://techcrunch.com/category/startups/feed/"),
@@ -95,11 +96,12 @@ PUBLICATION_FEEDS = [
     ("Technical.ly NYC", "https://technical.ly/new-york/feed/"),
     ("PitchBook News", "https://pitchbook.com/news/feed"),
     ("Business Insider", "https://www.businessinsider.com/sai/rss"),
-    # V.07: new high-value funding deal sources
     ("VC News Daily", "https://feeds.feedburner.com/vcnewsdaily"),
     ("SiliconAngle", "https://siliconangle.com/feed/"),
     ("Forbes Venture Capital", "https://www.forbes.com/venture-capital/feed/"),
     ("Business Wire Funding", "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeGVtSV0A%3D"),
+    ("GlobeNewswire Financing", "https://www.globenewswire.com/AtomFeed/subjectcode/17-Financing%20Agreements"),
+    ("PR Newswire Funding", "https://www.prnewswire.com/rss/financial-services-latest-news/financing-agreements-702-topic.rss"),
 ]
 
 

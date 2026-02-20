@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 from config import (
     OPENCORPORATES_TTL, CRUNCHBASE_TTL, SBIR_TTL, SBIR_CSV_URL,
     CLEARBIT_TTL, CLEARBIT_FREE_LIMIT, HUNTER_TTL, HUNTER_FREE_LIMIT,
+    NY_DOS_SODA_URL, NY_DOS_APP_TOKEN,
 )
 from database import (
     get_connection, batch_connection, insert_deal,
@@ -479,22 +480,97 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
 #  3. NY State DOS Entity Search
 # ═══════════════════════════════════════════════════════════════
 
-def run_ny_dos_scraper() -> dict:
+def run_ny_dos_scraper(days_back: int = 90) -> dict:
     """
-    NY State DOS entity search is currently disabled.
-    The old Oracle Forms endpoint (appext20.dos.ny.gov) was retired and
-    replaced with a JavaScript SPA at apps.dos.ny.gov/publicInquiry/ that
-    requires browser automation (Playwright/Selenium) to scrape. Re-enable
-    this when a headless browser dependency is added.
+    Query NY State DOS Active Corporations via the open SODA API on data.ny.gov.
+    Looks for recently formed corporations with tech/startup-indicator names.
+    No API key required (optional app token for higher rate limits).
 
     Returns stats dict: {found, new, skipped, errors}.
     """
-    logger.warning(
-        "[NY DOS] Disabled — the old endpoint was retired. "
-        "The new site (apps.dos.ny.gov/publicInquiry/) is a JavaScript SPA "
-        "that requires browser automation to scrape."
-    )
-    return {"found": 0, "new": 0, "skipped": 0, "errors": 0}
+    stats = {"found": 0, "new": 0, "skipped": 0, "errors": 0}
+    cutoff = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00")
+
+    # SODA API query: recently formed DOMESTIC BUSINESS CORPORATIONs
+    params = {
+        "$where": f"initial_dos_filing_date > '{cutoff}'",
+        "$order": "initial_dos_filing_date DESC",
+        "$limit": 500,
+        "entity_type_desc": "DOMESTIC BUSINESS CORPORATION",
+        "current_entity_status": "Active",
+    }
+    if NY_DOS_APP_TOKEN:
+        params["$$app_token"] = NY_DOS_APP_TOKEN
+
+    try:
+        resp = fetch(NY_DOS_SODA_URL, params=params, ttl=OPENCORPORATES_TTL)
+        if resp.status_code != 200:
+            logger.warning(f"[NY DOS] SODA API returned HTTP {resp.status_code}")
+            return stats
+        rows = resp.json()
+    except Exception as e:
+        logger.warning(f"[NY DOS] SODA API request failed: {e}")
+        return stats
+
+    logger.info(f"[NY DOS] Fetched {len(rows)} recent NY corporations")
+    stats["found"] = len(rows)
+
+    conn = get_connection()
+    existing = _existing_normalized_names(conn)
+
+    for row in rows:
+        name = (row.get("dos_process_name") or row.get("current_entity_name") or "").strip()
+        if not name:
+            continue
+
+        if not _looks_like_startup(name):
+            stats["skipped"] += 1
+            continue
+
+        norm = normalize_company_name(name)
+        if norm in existing:
+            stats["skipped"] += 1
+            continue
+
+        # Skip names that are clearly not startups
+        if should_skip_deal(conn, name, None):
+            stats["skipped"] += 1
+            continue
+
+        filing_date = (row.get("initial_dos_filing_date") or "")[:10]
+        county = row.get("dos_process_address_county") or ""
+
+        # NYC county filter — only keep NYC boroughs
+        nyc_counties = {"NEW YORK", "KINGS", "QUEENS", "BRONX", "RICHMOND"}
+        county_upper = county.upper().strip()
+        if county_upper and county_upper not in nyc_counties:
+            stats["skipped"] += 1
+            continue
+
+        category_name = classify_sector(name) or "Other"
+        cat_id = get_category_id(conn, category_name)
+
+        try:
+            deal_id = insert_deal(
+                conn, name,
+                stage="Unknown",
+                source_type="ny_dos",
+                source_url=f"https://data.ny.gov/resource/n9v6-gdp6?dos_process_name={name}",
+                date_announced=filing_date,
+                category_id=cat_id,
+                raw_text=f"NY DOS filing: {name}, formed {filing_date}, county: {county}",
+                confidence_score=0.25,
+            )
+            if deal_id:
+                existing.add(norm)
+                stats["new"] += 1
+        except Exception as e:
+            logger.debug(f"[NY DOS] Insert failed for {name}: {e}")
+            stats["errors"] += 1
+
+    conn.close()
+    logger.info(f"[NY DOS] Done: {stats['new']} new, {stats['skipped']} skipped")
+    return stats
 
 
 # ═══════════════════════════════════════════════════════════════

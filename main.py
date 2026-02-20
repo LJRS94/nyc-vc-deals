@@ -71,6 +71,17 @@ def run_full_scrape(days_back=14):
                 logger.error(f"{name} scraper failed: {e}")
                 errors.append(f"{name.lower()}: {e}")
 
+    # Post-scrape: cross-source dedup
+    try:
+        from quality_control import merge_cross_source_duplicates
+        conn = get_connection()
+        merged = merge_cross_source_duplicates(conn)
+        conn.close()
+        if merged:
+            logger.info(f"Cross-source dedup removed {merged} duplicates")
+    except Exception as e:
+        logger.warning(f"Cross-source dedup warning: {e}")
+
     elapsed = time.time() - start
     logger.info(f"Full scrape completed in {elapsed:.1f}s with {len(errors)} errors")
 

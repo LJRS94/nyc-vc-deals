@@ -415,6 +415,93 @@ def get_rejection_summary(conn, days: int = 30) -> Dict:
     return {r[0]: r[1] for r in rows}
 
 
+def merge_cross_source_duplicates(conn) -> int:
+    """
+    Post-scrape pass: find deals with the same normalized company name,
+    same stage, and close dates across different sources. Keep the
+    highest-confidence record and merge investor/firm links from the others.
+    Returns number of duplicates removed.
+    """
+    # Find groups of likely duplicates (same company + stage, close dates)
+    groups = conn.execute("""
+        SELECT company_name_normalized,
+               GROUP_CONCAT(id) as ids,
+               GROUP_CONCAT(source_type) as sources,
+               GROUP_CONCAT(confidence_score) as confidences,
+               GROUP_CONCAT(COALESCE(amount_usd, 0)) as amounts,
+               COUNT(*) as cnt
+        FROM deals
+        WHERE company_name_normalized IS NOT NULL
+        GROUP BY company_name_normalized, stage
+        HAVING COUNT(*) > 1
+          AND COUNT(DISTINCT source_type) > 1
+    """).fetchall()
+
+    merged = 0
+    for g in groups:
+        ids = [int(x) for x in g["ids"].split(",")]
+        confidences = [float(x) for x in g["confidences"].split(",")]
+        amounts = [float(x) for x in g["amounts"].split(",")]
+
+        # Check dates are close (within 180 days) — skip if not
+        dates = conn.execute(
+            f"SELECT id, date_announced FROM deals WHERE id IN ({','.join(['?']*len(ids))})",
+            ids,
+        ).fetchall()
+        date_vals = [d["date_announced"] for d in dates if d["date_announced"]]
+        if len(date_vals) >= 2:
+            from datetime import datetime as dt
+            try:
+                parsed = sorted(dt.strptime(d, "%Y-%m-%d") for d in date_vals)
+                if (parsed[-1] - parsed[0]).days > 180:
+                    continue  # too far apart — likely different rounds
+            except (ValueError, TypeError):
+                pass
+
+        # Pick the keeper: highest confidence, then largest amount
+        best_idx = 0
+        for i in range(1, len(ids)):
+            if (confidences[i] > confidences[best_idx] or
+                (confidences[i] == confidences[best_idx] and amounts[i] > amounts[best_idx])):
+                best_idx = i
+
+        keeper_id = ids[best_idx]
+        loser_ids = [x for x in ids if x != keeper_id]
+        ph = ",".join(["?"] * len(loser_ids))
+
+        # Merge: re-point investor/firm links from losers to keeper
+        conn.execute(
+            f"UPDATE OR IGNORE deal_firms SET deal_id = ? WHERE deal_id IN ({ph})",
+            [keeper_id] + loser_ids,
+        )
+        conn.execute(
+            f"UPDATE OR IGNORE deal_investors SET deal_id = ? WHERE deal_id IN ({ph})",
+            [keeper_id] + loser_ids,
+        )
+
+        # If keeper has no amount but a loser does, update it
+        keeper_amt = amounts[best_idx]
+        if not keeper_amt:
+            for i, aid in enumerate(ids):
+                if amounts[i] and aid != keeper_id:
+                    conn.execute(
+                        "UPDATE deals SET amount_usd = ?, amount_disclosed = 1 WHERE id = ?",
+                        (amounts[i], keeper_id),
+                    )
+                    break
+
+        # Clean up orphaned links then delete losers
+        conn.execute(f"DELETE FROM deal_firms WHERE deal_id IN ({ph})", loser_ids)
+        conn.execute(f"DELETE FROM deal_investors WHERE deal_id IN ({ph})", loser_ids)
+        conn.execute(f"DELETE FROM deals WHERE id IN ({ph})", loser_ids)
+        merged += len(loser_ids)
+
+    if merged:
+        conn.commit()
+        logger.info(f"Cross-source dedup: merged {merged} duplicate deals")
+    return merged
+
+
 def record_metrics(conn, source_type: str, submitted: int,
                    accepted: int, rejections: Dict, avg_confidence: float):
     """Record quality metrics for a scrape run."""

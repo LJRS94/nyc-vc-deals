@@ -262,7 +262,7 @@ def _run_scrape_background():
 
         # Initialize QC tables
         try:
-            from quality_control import init_qc_tables, run_audit, update_auto_reject_patterns
+            from quality_control import init_qc_tables, run_audit, update_auto_reject_patterns, merge_cross_source_duplicates
             conn = get_connection()
             init_qc_tables(conn)
             conn.close()
@@ -273,8 +273,16 @@ def _run_scrape_background():
         run_news_scraper(days_back=180)
         run_alleywatch_scraper(days_back=180)
 
-        # Post-scrape QC audit
+        # Post-scrape: cross-source dedup + QC audit
         conn = get_connection()
+
+        try:
+            merged = merge_cross_source_duplicates(conn)
+            if merged:
+                logger.info(f"Cross-source dedup removed {merged} duplicates")
+        except Exception as e:
+            logger.warning(f"Cross-source dedup warning: {e}")
+
         deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
 
         try:

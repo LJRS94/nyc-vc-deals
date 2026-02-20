@@ -145,21 +145,24 @@ def get_firm_partners(firm_id):
         ORDER BY deal_count DESC, i.name
     """, (firm_id,)).fetchall()
 
-    partner_data = []
-    for p in partners:
-        cat_rows = conn.execute("""
-            SELECT c.name as category, COUNT(*) as count
+    # Batch-fetch categories for all partners (avoids N+1)
+    partner_ids = [p["id"] for p in partners]
+    cats_by_partner = {}
+    if partner_ids:
+        ph = ",".join(["?"] * len(partner_ids))
+        cat_rows = conn.execute(f"""
+            SELECT di.investor_id, c.name as category, COUNT(*) as count
             FROM deals d
             JOIN deal_investors di ON d.id = di.deal_id
             LEFT JOIN categories c ON d.category_id = c.id
-            WHERE di.investor_id = ?
-            GROUP BY c.name ORDER BY count DESC
-        """, (p["id"],)).fetchall()
+            WHERE di.investor_id IN ({ph})
+            GROUP BY di.investor_id, c.name
+            ORDER BY count DESC
+        """, partner_ids).fetchall()
+        for r in cat_rows:
+            cats_by_partner.setdefault(r["investor_id"], []).append(dict(r))
 
-        partner_data.append({
-            **dict(p),
-            "categories": [dict(c) for c in cat_rows],
-        })
+    partner_data = [{**dict(p), "categories": cats_by_partner.get(p["id"], [])} for p in partners]
 
     conn.close()
     return jsonify({
@@ -201,21 +204,29 @@ def get_firm_profile(firm_id):
         ORDER BY deal_count DESC, i.name
     """, (firm_id,)).fetchall()
 
-    team = []
-    for t in team_rows:
-        sectors = conn.execute("""
-            SELECT c.name, COUNT(*) as count
+    # Batch-fetch sectors for all team members (avoids N+1)
+    team_ids = [t["id"] for t in team_rows]
+    sectors_by_member = {}
+    if team_ids:
+        ph = ",".join(["?"] * len(team_ids))
+        sector_rows = conn.execute(f"""
+            SELECT di.investor_id, c.name, COUNT(*) as count
             FROM deals d
             JOIN deal_investors di ON d.id = di.deal_id
             LEFT JOIN categories c ON d.category_id = c.id
-            WHERE di.investor_id = ?
-            GROUP BY c.name ORDER BY count DESC
-        """, (t["id"],)).fetchall()
-        team.append({
-            "id": t["id"], "name": t["name"], "title": t["title"],
-            "linkedin_url": t["linkedin_url"], "deal_count": t["deal_count"],
-            "sectors": [{"name": s["name"], "count": s["count"]} for s in sectors],
-        })
+            WHERE di.investor_id IN ({ph})
+            GROUP BY di.investor_id, c.name
+            ORDER BY count DESC
+        """, team_ids).fetchall()
+        for r in sector_rows:
+            sectors_by_member.setdefault(r["investor_id"], []).append(
+                {"name": r["name"], "count": r["count"]})
+
+    team = [{
+        "id": t["id"], "name": t["name"], "title": t["title"],
+        "linkedin_url": t["linkedin_url"], "deal_count": t["deal_count"],
+        "sectors": sectors_by_member.get(t["id"], []),
+    } for t in team_rows]
 
     portfolio = conn.execute("""
         SELECT id, company_name, company_website, description, sector, lead_partner
@@ -264,29 +275,41 @@ def get_firm_profile(firm_id):
             except Exception:
                 pass
 
-    # Funding history
+    # Funding history — batch-fetch all rounds for all companies (avoids N+1)
     funding_history = {}
-    seen_companies = set()
-    for d in deals_list:
-        cn_norm = (d["company_name"] or "").lower().replace(" ", "")
-        if cn_norm in seen_companies:
-            continue
-        seen_companies.add(cn_norm)
-        all_rounds = conn.execute("""
-            SELECT d2.stage, d2.amount_usd, d2.date_announced,
+    norm_names = list(set(
+        d.get("company_name_normalized") or (d["company_name"] or "").lower().replace(" ", "")
+        for d in deals_list
+    ))
+    rounds_by_company = {}
+    if norm_names:
+        ph = ",".join(["?"] * len(norm_names))
+        all_rounds = conn.execute(f"""
+            SELECT d2.company_name_normalized, d2.company_name,
+                   d2.stage, d2.amount_usd, d2.date_announced,
                    GROUP_CONCAT(DISTINCT f2.name) as firms
             FROM deals d2
             LEFT JOIN deal_firms df2 ON d2.id = df2.deal_id
             LEFT JOIN firms f2 ON df2.firm_id = f2.id
-            WHERE d2.company_name_normalized = ?
+            WHERE d2.company_name_normalized IN ({ph})
             GROUP BY d2.id
             ORDER BY d2.date_announced
-        """, (d.get("company_name_normalized") or cn_norm,)).fetchall()
-        if len(all_rounds) > 1:
+        """, norm_names).fetchall()
+        for r in all_rounds:
+            rounds_by_company.setdefault(r["company_name_normalized"], []).append(r)
+
+    seen_companies = set()
+    for d in deals_list:
+        cn_norm = d.get("company_name_normalized") or (d["company_name"] or "").lower().replace(" ", "")
+        if cn_norm in seen_companies:
+            continue
+        seen_companies.add(cn_norm)
+        rounds = rounds_by_company.get(cn_norm, [])
+        if len(rounds) > 1:
             funding_history[d["company_name"]] = [
                 {"stage": r["stage"], "amount_usd": r["amount_usd"],
                  "date_announced": r["date_announced"], "firms": r["firms"]}
-                for r in all_rounds
+                for r in rounds
             ]
 
     conn.close()

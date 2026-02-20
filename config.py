@@ -53,6 +53,8 @@ DELAWARE_ECORP_BASE = "https://icis.corp.delaware.gov/ecorp/entitysearch"
 DELAWARE_ENTITY_SEARCH = "https://icis.corp.delaware.gov/ecorp/entitysearch/namesearch.aspx"
 SBIR_CSV_URL = "https://data.www.sbir.gov/awarddatapublic/award_data.csv"
 SEC_EFTS_BASE = "https://efts.sec.gov/LATEST/search-index"
+NY_DOS_SODA_URL = "https://data.ny.gov/resource/n9v6-gdp6.json"
+NY_DOS_APP_TOKEN = os.environ.get("NY_DOS_APP_TOKEN", "")
 
 # ── Deal validation thresholds ───────────────────────────────
 MAX_DEAL_AMOUNT = 10_000_000_000    # $10B global cap

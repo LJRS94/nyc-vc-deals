@@ -14,15 +14,13 @@ from urllib.parse import urlparse
 
 from database import get_connection, upsert_deal_metadata
 from fetcher import fetch
+from config import (
+    GOOGLE_CSE_DAILY_LIMIT, APOLLO_MONTHLY_LIMIT,
+    GOOGLE_CSE_SEARCH_TTL as COMPANY_SEARCH_TTL,
+    APOLLO_TTL,
+)
 
 logger = logging.getLogger(__name__)
-
-# ── Config ────────────────────────────────────────────────────
-
-GOOGLE_CSE_DAILY_LIMIT = 95   # buffer from 100/day free tier
-APOLLO_MONTHLY_LIMIT = 95     # buffer from 100/month free tier
-COMPANY_SEARCH_TTL = 86400 * 30  # 30 days — company domains don't change
-APOLLO_TTL = 86400 * 14          # 14 days — org data changes slowly
 
 # Domains that are NOT real company websites
 DOMAIN_BLOCKLIST = {

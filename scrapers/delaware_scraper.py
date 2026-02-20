@@ -30,7 +30,7 @@ from database import (
 from fetcher import fetch, SEC_HEADERS
 from scrapers.utils import (
     should_skip_deal, is_nyc_related, classify_sector,
-    normalize_stage, parse_amount,
+    normalize_stage, parse_amount, link_investors_to_deal,
 )
 
 logger = logging.getLogger(__name__)
@@ -699,7 +699,7 @@ def run_delaware_scraper(days_back: int = 14):
             for deal_id, company, de_info in de_updates:
                 conn.execute("""
                     UPDATE deals
-                    SET raw_text = raw_text || ? ,
+                    SET raw_text = COALESCE(raw_text, '') || ? ,
                         updated_at = ?
                     WHERE id = ?
                 """, (
@@ -754,17 +754,12 @@ def run_delaware_scraper(days_back: int = 14):
 
                 if deal_id:
                     total_new += 1
-                    for inv in investors:
-                        inv_name = inv["name"]
-                        firm_row = conn.execute(
-                            "SELECT id FROM firms WHERE LOWER(name) LIKE ?",
-                            (f"%{inv_name.lower()}%",)
-                        ).fetchone()
-                        if firm_row:
-                            link_deal_firm(conn, deal_id, firm_row["id"], inv["role"])
-                        else:
-                            firm_id = upsert_firm(conn, inv_name, location="Unknown")
-                            link_deal_firm(conn, deal_id, firm_id, inv["role"])
+                    if investors:
+                        link_investors_to_deal(
+                            conn, deal_id, investors,
+                            upsert_investor, link_deal_investor,
+                            upsert_firm, link_deal_firm,
+                        )
 
             finish_scrape(conn, log_id, "success", total_found, total_new)
 

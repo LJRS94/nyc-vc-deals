@@ -226,8 +226,6 @@ def company_names_match(a: str, b: str, threshold: float = 0.85) -> bool:
 
 # ── Deal filters ─────────────────────────────────────────────
 
-MAX_EARLY_STAGE_AMOUNT = 50_000_000  # $50M cap for early-stage deals
-
 _firm_names_cache = None  # cached set of normalized firm names
 
 
