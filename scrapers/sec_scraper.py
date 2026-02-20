@@ -24,6 +24,7 @@ from scrapers.utils import (
     classify_stage_from_amount, normalize_company_name, classify_sector,
     should_skip_deal, validate_deal_amount,
 )
+from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
 
@@ -547,7 +548,7 @@ def run_sec_scraper(days_back: int = 180):
             f"(skipped {skipped_early} junk names early)"
         )
 
-        # Insert deals
+        # Insert deals via unified quality gate
         skipped_filter = 0
         with batch_connection() as conn:
             for filing, details in enriched:
@@ -555,27 +556,15 @@ def run_sec_scraper(days_back: int = 180):
                 if details and details.get("company_name"):
                     company_name = _clean_sec_name(details["company_name"])
 
-                # Full filter — name + industry + amount + VC-firm check
+                # Pre-filter: SEC-specific junk that QC gate doesn't know about
                 if not _should_keep_sec_filing(company_name, details, conn):
                     skipped_filter += 1
                     continue
 
-                # Normalized dedup check
-                norm = normalize_company_name(company_name)
-                existing = conn.execute(
-                    "SELECT id FROM deals WHERE company_name_normalized = ? AND source_type = 'sec_filing'",
-                    (norm,)
-                ).fetchone()
-                if existing:
-                    continue
-
-                # Extract amount
                 amount = None
                 if details:
                     amount = details.get("amount_sold") or details.get("total_offering")
 
-                # Classify
-                stage = classify_stage_from_amount(amount)
                 industry = details.get("industry", "") if details else ""
                 category_name = classify_sector(f"{company_name} {industry}")
                 cat_id = get_category_id(conn, category_name) if category_name else None
@@ -585,37 +574,35 @@ def run_sec_scraper(days_back: int = 180):
                     f"&company={company_name}&type=D&dateb=&owner=include&count=10"
                 )
 
-                # Confidence scoring — tiered by enrichment quality
-                has_xml = details is not None
-                has_industry = bool(industry)
-                has_amount = amount is not None
-                if has_xml and has_industry:
-                    confidence = 0.85 if has_amount else 0.5
-                elif has_xml:
-                    confidence = 0.7 if has_amount else 0.4
-                else:
-                    confidence = 0.5 if has_amount else 0.3
+                raw_text = json.dumps({
+                    "cik": filing.get("cik"),
+                    "accession": filing.get("accession_number"),
+                    "state": details.get("state") if details else filing.get("state"),
+                    "city": details.get("city") if details else None,
+                    "industry": industry,
+                    "investors_count": details.get("investors_count") if details else None,
+                    "source_method": filing.get("source_method"),
+                })
 
-                deal_id = insert_deal(
-                    conn, company_name,
-                    stage=stage,
-                    amount_usd=amount,
-                    amount_disclosed=1 if amount else 0,
+                # ── Unified Quality Gate ──
+                accepted, reason, cleaned = validate_deal(
+                    conn,
+                    company_name=company_name,
+                    stage=classify_stage_from_amount(amount),
+                    amount=amount,
                     date_announced=filing.get("filing_date"),
-                    source_url=filing_url,
                     source_type="sec_filing",
+                    is_nyc=True,  # already NYC-filtered above
+                    raw_text=raw_text,
+                    source_url=filing_url,
                     category_id=cat_id,
-                    confidence_score=confidence,
-                    raw_text=json.dumps({
-                        "cik": filing.get("cik"),
-                        "accession": filing.get("accession_number"),
-                        "state": details.get("state") if details else filing.get("state"),
-                        "city": details.get("city") if details else None,
-                        "industry": industry,
-                        "investors_count": details.get("investors_count") if details else None,
-                        "source_method": filing.get("source_method"),
-                    }),
                 )
+
+                if not accepted:
+                    logger.debug(f"QC rejected SEC '{company_name}': {reason}")
+                    continue
+
+                deal_id = insert_deal(conn, cleaned.pop("company_name"), **cleaned)
 
                 if deal_id:
                     total_new += 1
@@ -629,10 +616,10 @@ def run_sec_scraper(days_back: int = 180):
                             else:
                                 person_name = person
                                 person_title = None
-                            kwargs = {}
+                            inv_kwargs = {}
                             if person_title:
-                                kwargs["title"] = person_title
-                            inv_id = upsert_investor(conn, person_name, **kwargs)
+                                inv_kwargs["title"] = person_title
+                            inv_id = upsert_investor(conn, person_name, **inv_kwargs)
                             link_deal_investor(conn, deal_id, inv_id)
 
             finish_scrape(conn, log_id, "success", total_found, total_new)

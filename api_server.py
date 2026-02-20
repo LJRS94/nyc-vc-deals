@@ -624,7 +624,8 @@ def get_firm_profile(firm_id):
 
     # 2. Deals with category and role
     deals = conn.execute("""
-        SELECT d.id, d.company_name, d.company_website, d.company_description,
+        SELECT d.id, d.company_name, d.company_name_normalized,
+               d.company_website, d.company_description,
                d.stage, d.amount_usd, d.date_announced, d.source_type,
                c.name as category, df.role
         FROM deals d
@@ -670,8 +671,6 @@ def get_firm_profile(firm_id):
         ORDER BY company_name
     """, (firm_id,)).fetchall()
 
-    conn.close()
-
     # Compute KPIs
     deal_count = len(deals_list)
     total_invested = sum(d["amount_usd"] or 0 for d in deals_list)
@@ -713,6 +712,34 @@ def get_firm_profile(firm_id):
             except Exception:
                 pass
 
+    # Funding history: for companies in this firm's deals, show ALL rounds
+    # (including rounds from other firms) to show full progression
+    funding_history = {}
+    seen_companies = set()
+    for d in deals_list:
+        cn_norm = (d["company_name"] or "").lower().replace(" ", "")
+        if cn_norm in seen_companies:
+            continue
+        seen_companies.add(cn_norm)
+        all_rounds = conn.execute("""
+            SELECT d2.stage, d2.amount_usd, d2.date_announced,
+                   GROUP_CONCAT(DISTINCT f2.name) as firms
+            FROM deals d2
+            LEFT JOIN deal_firms df2 ON d2.id = df2.deal_id
+            LEFT JOIN firms f2 ON df2.firm_id = f2.id
+            WHERE d2.company_name_normalized = ?
+            GROUP BY d2.id
+            ORDER BY d2.date_announced
+        """, (d.get("company_name_normalized") or cn_norm,)).fetchall()
+        if len(all_rounds) > 1:
+            funding_history[d["company_name"]] = [
+                {"stage": r["stage"], "amount_usd": r["amount_usd"],
+                 "date_announced": r["date_announced"], "firms": r["firms"]}
+                for r in all_rounds
+            ]
+
+    conn.close()
+
     return jsonify({
         "firm": dict(firm),
         "kpis": {
@@ -727,6 +754,7 @@ def get_firm_profile(firm_id):
         "deals": deals_list,
         "sectors": sectors,
         "stage_breakdown": stage_breakdown,
+        "funding_history": funding_history,
         "activity": {
             "deals_last_90d": deals_last_90d,
             "deals_last_year": deals_last_year,
@@ -1053,13 +1081,37 @@ def _run_scrape_background():
         finally:
             conn.close()
 
-        # Run the main scrapers
+        # Initialize QC tables
+        try:
+            from quality_control import init_qc_tables, run_audit, update_auto_reject_patterns
+            conn = get_connection()
+            init_qc_tables(conn)
+            conn.close()
+        except Exception as e:
+            logger.warning(f"QC init warning: {e}")
+
+        # Run the main scrapers (all funnel through validate_deal() quality gate)
         run_news_scraper(days_back=180)
         run_alleywatch_scraper(days_back=180)
 
+        # Post-scrape QC audit
         conn = get_connection()
         deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
-        conn.close()
+
+        try:
+            # Auto-promote frequently-rejected patterns to auto-reject
+            update_auto_reject_patterns(conn)
+            # Run audit and log results
+            audit = run_audit(conn)
+            logger.info(
+                f"QC audit: {audit['total_deals']} deals, "
+                f"{audit['total_issues']} issues, "
+                f"health={audit['health_score']}"
+            )
+        except Exception as e:
+            logger.warning(f"QC audit warning: {e}")
+        finally:
+            conn.close()
 
         _scrape_status["last_result"] = f"Completed. {deal_count} total deals."
         logger.info(f"Background scrape complete: {deal_count} deals")
@@ -1168,6 +1220,62 @@ def scrape_status():
     deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
     conn.close()
     return jsonify({**_scrape_status, "total_deals": deal_count})
+
+
+# ── Quality Control Endpoints ────────────────────────────────────
+
+@app.route("/api/qc/audit", methods=["GET"])
+def qc_audit():
+    """Run a quality audit and return issues found."""
+    try:
+        from quality_control import run_audit, init_qc_tables
+        conn = get_connection()
+        init_qc_tables(conn)
+        result = run_audit(conn)
+        conn.close()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/qc/rejections", methods=["GET"])
+def qc_rejections():
+    """Get recent rejection stats for self-improvement insights."""
+    try:
+        from quality_control import get_rejection_summary, init_qc_tables
+        conn = get_connection()
+        init_qc_tables(conn)
+        days = request.args.get("days", 30, type=int)
+        summary = get_rejection_summary(conn, days)
+
+        # Also get top auto-reject patterns
+        patterns = conn.execute(
+            "SELECT pattern_type, pattern_value, hit_count, auto_reject "
+            "FROM qc_patterns ORDER BY hit_count DESC LIMIT 20"
+        ).fetchall()
+        conn.close()
+        return jsonify({
+            "rejection_summary": summary,
+            "top_patterns": [dict(p) for p in patterns],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/qc/metrics", methods=["GET"])
+def qc_metrics():
+    """Get quality metrics over time."""
+    try:
+        from quality_control import init_qc_tables
+        conn = get_connection()
+        init_qc_tables(conn)
+        rows = conn.execute(
+            "SELECT * FROM qc_metrics ORDER BY run_date DESC LIMIT 50"
+        ).fetchall()
+        conn.close()
+        return jsonify([dict(r) for r in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # Start the scheduler when running under gunicorn (production)

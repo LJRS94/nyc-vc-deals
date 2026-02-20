@@ -37,6 +37,7 @@ from scrapers.utils import (
 from scrapers.llm_extract import (
     extract_alleywatch_deals, validate_company_name, clean_company_name,
 )
+from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
 
@@ -544,34 +545,9 @@ def deal_exists(conn, company_name: str, amount: Optional[float] = None) -> bool
 
 
 def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
-    """Insert a parsed deal into the database with firm/investor linkage."""
+    """Insert a parsed deal into the database via unified quality gate."""
     company = deal["company_name"]
     amount = deal.get("amount")
-
-    if deal_exists(conn, company, amount):
-        logger.debug(f"  Skipping duplicate: {company}")
-        return None
-
-    # Skip VC firms and deals > $50M
-    skip = should_skip_deal(conn, company, amount)
-    if skip:
-        logger.debug(f"  Skipping: {skip}")
-        return None
-
-    # Determine category
-    category_id = None
-    sector = deal.get("sector")
-    if sector:
-        category_id = get_category_id(conn, sector)
-
-    # Determine confidence
-    confidence = 0.9  # AlleyWatch is high-signal
-    if not amount:
-        confidence -= 0.2
-    if deal.get("source_url", "").startswith("https://news.google"):
-        confidence -= 0.1
-    if not deal.get("is_nyc_confirmed", True):
-        confidence -= 0.2
 
     # Build raw_text for reference
     raw_parts = [f"Company: {company}"]
@@ -587,25 +563,34 @@ def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
         raw_parts.append(f"Investors: {', '.join(deal['all_investors'])}")
     raw_text = "\n".join(raw_parts)
 
-    deal_id = insert_deal(
+    src = "google_news" if deal.get("source_url", "").startswith("https://news.google") else "alleywatch"
+    sector = deal.get("sector")
+    category_id = get_category_id(conn, sector) if sector else None
+
+    # ── Unified Quality Gate ──
+    accepted, reason, cleaned = validate_deal(
         conn,
         company_name=company,
-        company_description=deal.get("description"),
         stage=deal.get("stage", "Unknown"),
-        amount_usd=amount,
-        amount_disclosed=1 if amount else 0,
+        amount=amount,
         date_announced=deal.get("date_announced"),
-        source_url=deal.get("source_url"),
-        source_type="google_news" if deal.get("source_url", "").startswith("https://news.google") else "alleywatch",
-        category_id=category_id,
-        confidence_score=round(confidence, 2),
+        source_type=src,
+        description=deal.get("description"),
+        is_nyc=deal.get("is_nyc_confirmed", True),
         raw_text=raw_text,
+        source_url=deal.get("source_url"),
+        category_id=category_id,
     )
+
+    if not accepted:
+        logger.debug(f"  QC rejected '{company}': {reason}")
+        return None
+
+    deal_id = insert_deal(conn, cleaned.pop("company_name"), **cleaned)
 
     # Link investors
     lead_name = deal.get("lead_investor")
     for inv_name in deal.get("all_investors", []):
-        # Check if this investor maps to a known firm
         firm_row = conn.execute(
             "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)", (inv_name,)
         ).fetchone()
@@ -614,12 +599,10 @@ def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
         inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
         link_deal_investor(conn, deal_id, inv_id)
 
-        # Link firm to deal
         if firm_id:
             role = "lead" if inv_name == lead_name else "participant"
             link_deal_firm(conn, deal_id, firm_id, role=role)
 
-        # If lead, also set on the deal record
         if inv_name == lead_name:
             conn.execute(
                 "UPDATE deals SET lead_investor_id = ? WHERE id = ?",

@@ -25,10 +25,12 @@ from scrapers.utils import (
     classify_sector as _classify_sector, normalize_stage as _normalize_stage,
     parse_amount as _parse_amount, normalize_company_name, company_names_match,
     should_skip_deal, validate_deal_amount, classify_stage_from_amount,
+    is_duplicate_deal,
 )
 from scrapers.llm_extract import (
     extract_deals_batch, validate_company_name, clean_company_name,
 )
+from quality_control import validate_deal, init_qc_tables
 
 logger = logging.getLogger(__name__)
 
@@ -527,176 +529,8 @@ def extract_investors(text: str) -> List[Dict]:
 
 # ── Main Pipeline ─────────────────────────────────────────────
 
-def process_deal(conn, title: str, url: str, full_text: str,
-                 source_type: str = "news_article",
-                 date_announced: str = None,
-                 nyc_confirmed: bool = False,
-                 llm_result: dict = None) -> Optional[int]:
-    """
-    Process a single deal from scraped content.
-    LLM-first: use llm_result if available, fall back to regex extraction.
-    """
-    combined_text = f"{title} {full_text}"
-
-    # ── LLM path (preferred) ──
-    if llm_result:
-        # Reject non-funding articles
-        if not llm_result.get("is_funding_deal", True):
-            logger.debug(f"LLM says not a funding deal: {title[:60]}")
-            return None
-
-        company_name = llm_result.get("company_name")
-        if company_name:
-            company_name = clean_company_name(company_name)
-        if not company_name or not validate_company_name(company_name):
-            # Fall through to regex
-            company_name = None
-
-        if company_name:
-            # NYC check: use LLM signal + text check
-            llm_nyc = llm_result.get("is_nyc")
-            if not nyc_confirmed and not llm_nyc and not is_nyc_related(combined_text):
-                return None
-
-            stage = llm_result.get("stage", "Unknown")
-            if stage not in ("Pre-Seed", "Seed", "Series A", "Series B", "Series C+", "Unknown"):
-                stage = detect_stage(combined_text)
-            amount = llm_result.get("amount")
-            if amount and not validate_deal_amount(amount, stage):
-                amount = extract_amount(full_text, title=title)
-            # Amount-based fallback: infer stage from amount when still Unknown
-            if stage == "Unknown" and amount:
-                stage = classify_stage_from_amount(amount)
-            description = llm_result.get("description")
-            category_name = llm_result.get("sector") or detect_category(combined_text)
-
-            # Extract investors from LLM
-            llm_investors = llm_result.get("investors", [])
-            lead_inv = llm_result.get("lead_investor")
-            investors = []
-            if lead_inv:
-                investors.append({"name": lead_inv, "role": "lead"})
-            for inv in llm_investors:
-                if inv != lead_inv:
-                    investors.append({"name": inv, "role": "participant"})
-            if not investors:
-                investors = extract_investors(combined_text)
-
-            confidence = 0.85 if amount and stage != "Unknown" else 0.6
-
-            # Skip VC firms
-            skip = should_skip_deal(conn, company_name, amount)
-            if skip:
-                logger.debug(f"Skipping deal: {skip}")
-                return None
-
-            # Dedup
-            existing = conn.execute(
-                "SELECT id FROM deals WHERE company_name_normalized = ? AND stage = ?",
-                (normalize_company_name(company_name), stage)
-            ).fetchone()
-            if existing:
-                return None
-
-            cat_id = get_category_id(conn, category_name)
-
-            deal_id = insert_deal(
-                conn, company_name,
-                company_description=description,
-                stage=stage,
-                amount_usd=amount,
-                amount_disclosed=1 if amount else 0,
-                date_announced=date_announced,
-                source_url=url,
-                source_type=source_type,
-                category_id=cat_id,
-                raw_text=combined_text[:2000],
-                confidence_score=confidence,
-            )
-
-            # Link investors (both investor records and firm records)
-            lead_investor_id = None
-            for inv_data in investors:
-                inv_name = inv_data["name"]
-                role = inv_data.get("role", "participant")
-
-                # Check if this investor maps to a known firm
-                firm_row = conn.execute(
-                    "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
-                    (inv_name,)
-                ).fetchone()
-                firm_id = firm_row["id"] if firm_row else None
-
-                # Create investor record and link to deal
-                inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
-                link_deal_investor(conn, deal_id, inv_id)
-
-                # Link firm to deal
-                if firm_id:
-                    link_deal_firm(conn, deal_id, firm_id, role)
-                else:
-                    new_firm_id = upsert_firm(conn, inv_name, location="Unknown")
-                    link_deal_firm(conn, deal_id, new_firm_id, role)
-
-                # Track lead investor
-                if role == "lead" and lead_investor_id is None:
-                    lead_investor_id = inv_id
-
-            if lead_investor_id:
-                conn.execute(
-                    "UPDATE deals SET lead_investor_id = ? WHERE id = ?",
-                    (lead_investor_id, deal_id)
-                )
-
-            return deal_id
-
-    # ── Regex fallback path ──
-    if not nyc_confirmed and not is_nyc_related(combined_text):
-        return None
-
-    company_name = extract_company_name(title)
-    if company_name:
-        company_name = clean_company_name(company_name)
-    if not company_name or not validate_company_name(company_name):
-        return None
-
-    stage = detect_stage(combined_text)
-    amount = extract_amount(full_text, title=title)
-    if not validate_deal_amount(amount, stage):
-        amount = None
-    # Amount-based fallback: infer stage from amount when still Unknown
-    if stage == "Unknown" and amount:
-        stage = classify_stage_from_amount(amount)
-    category_name = detect_category(combined_text)
-    investors = extract_investors(combined_text)
-
-    skip = should_skip_deal(conn, company_name, amount)
-    if skip:
-        logger.debug(f"Skipping deal: {skip}")
-        return None
-
-    existing = conn.execute(
-        "SELECT id FROM deals WHERE company_name_normalized = ? AND stage = ?",
-        (normalize_company_name(company_name), stage)
-    ).fetchone()
-    if existing:
-        return None
-
-    cat_id = get_category_id(conn, category_name)
-
-    deal_id = insert_deal(
-        conn, company_name,
-        stage=stage,
-        amount_usd=amount,
-        amount_disclosed=1 if amount else 0,
-        date_announced=date_announced,
-        source_url=url,
-        source_type=source_type,
-        category_id=cat_id,
-        raw_text=combined_text[:2000],
-        confidence_score=0.7 if amount and stage != "Unknown" else 0.4,
-    )
-
+def _link_investors(conn, deal_id: int, investors: List[Dict]):
+    """Link investor and firm records to a deal. Shared by all ingestion paths."""
     lead_investor_id = None
     for inv_data in investors:
         inv_name = inv_data["name"]
@@ -725,6 +559,108 @@ def process_deal(conn, title: str, url: str, full_text: str,
             "UPDATE deals SET lead_investor_id = ? WHERE id = ?",
             (lead_investor_id, deal_id)
         )
+
+
+def process_deal(conn, title: str, url: str, full_text: str,
+                 source_type: str = "news_article",
+                 date_announced: str = None,
+                 nyc_confirmed: bool = False,
+                 llm_result: dict = None) -> Optional[int]:
+    """
+    Process a single deal from scraped content.
+    LLM-first extraction, regex fallback, then UNIFIED quality gate.
+    """
+    combined_text = f"{title} {full_text}"
+
+    # ── Step 1: Extract data (LLM or regex) ──
+    company_name = None
+    stage = "Unknown"
+    amount = None
+    description = None
+    category_name = None
+    investors = []
+    is_nyc = nyc_confirmed
+
+    if llm_result:
+        # Reject non-funding articles
+        if not llm_result.get("is_funding_deal", True):
+            logger.debug(f"LLM says not a funding deal: {title[:60]}")
+            return None
+
+        company_name = llm_result.get("company_name")
+        if company_name:
+            company_name = clean_company_name(company_name)
+
+        if company_name:
+            llm_nyc = llm_result.get("is_nyc")
+            is_nyc = nyc_confirmed or llm_nyc or is_nyc_related(combined_text)
+
+            stage = llm_result.get("stage", "Unknown")
+            if stage not in ("Pre-Seed", "Seed", "Series A", "Series B", "Series C+", "Unknown"):
+                stage = detect_stage(combined_text)
+            amount = llm_result.get("amount")
+            if amount and not validate_deal_amount(amount, stage):
+                amount = extract_amount(full_text, title=title)
+            description = llm_result.get("description")
+            category_name = llm_result.get("sector") or detect_category(combined_text)
+
+            # Extract investors from LLM
+            llm_investors = llm_result.get("investors", [])
+            lead_inv = llm_result.get("lead_investor")
+            if lead_inv:
+                investors.append({"name": lead_inv, "role": "lead"})
+            for inv in llm_investors:
+                if inv != lead_inv:
+                    investors.append({"name": inv, "role": "participant"})
+
+    # Regex fallback if LLM didn't produce a company name
+    if not company_name:
+        company_name = extract_company_name(title)
+        if company_name:
+            company_name = clean_company_name(company_name)
+        if not company_name:
+            return None
+        is_nyc = nyc_confirmed or is_nyc_related(combined_text)
+        stage = detect_stage(combined_text)
+        amount = extract_amount(full_text, title=title)
+        if amount and not validate_deal_amount(amount, stage):
+            amount = None
+        category_name = detect_category(combined_text)
+        if not investors:
+            investors = extract_investors(combined_text)
+
+    # NYC gate (applied regardless of extraction path)
+    if not is_nyc:
+        return None
+
+    # ── Step 2: Unified Quality Gate ──
+    cat_id = get_category_id(conn, category_name) if category_name else None
+
+    accepted, reason, cleaned = validate_deal(
+        conn,
+        company_name=company_name,
+        stage=stage,
+        amount=amount,
+        date_announced=date_announced,
+        source_type=source_type,
+        description=description,
+        is_nyc=is_nyc,
+        raw_text=combined_text[:2000],
+        source_url=url,
+        category_id=cat_id,
+    )
+
+    if not accepted:
+        logger.debug(f"QC rejected '{company_name}': {reason}")
+        return None
+
+    # ── Step 3: Insert (using cleaned data from QC gate) ──
+    deal_id = insert_deal(conn, cleaned.pop("company_name"), **cleaned)
+
+    # ── Step 4: Link investors ──
+    if not investors:
+        investors = extract_investors(combined_text)
+    _link_investors(conn, deal_id, investors)
 
     return deal_id
 

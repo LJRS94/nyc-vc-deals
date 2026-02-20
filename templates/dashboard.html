@@ -661,6 +661,27 @@
                         </div>
                       </div>}
 
+                      {/* Funding timeline — companies with multiple rounds */}
+                      {fp.funding_history && Object.keys(fp.funding_history).length > 0 && <div style={{marginBottom:20}}>
+                        <div className="kpi-label" style={{marginBottom:8}}>Funding Timeline</div>
+                        {Object.entries(fp.funding_history).map(([company, rounds]) => {
+                          const sorted = [...rounds].sort((a,b) => (a.date_announced||"").localeCompare(b.date_announced||""));
+                          return <div key={company} style={{background:"#101118",border:"1px solid #191a2e",borderRadius:6,padding:"10px 14px",marginBottom:6}}>
+                            <div style={{fontSize:12,fontWeight:700,color:"#eee",marginBottom:6}}>{company}</div>
+                            <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                              {sorted.map((r,i) => <React.Fragment key={i}>
+                                {i > 0 && <span style={{color:"#333",fontSize:11}}>→</span>}
+                                <div style={{background:"#0c0d14",border:"1px solid #1e1f38",borderRadius:4,padding:"3px 10px",display:"flex",alignItems:"center",gap:6}}>
+                                  <Badge t={r.stage} c={SC[r.stage]} />
+                                  {r.amount_usd && <span className="mono green" style={{fontSize:11}}>{$(r.amount_usd)}</span>}
+                                  {r.date_announced && <span className="mono muted" style={{fontSize:9.5}}>{r.date_announced.slice(0,7)}</span>}
+                                </div>
+                              </React.Fragment>)}
+                            </div>
+                          </div>;
+                        })}
+                      </div>}
+
                       {/* Top team preview */}
                       {fp.team.length > 0 && <div style={{marginBottom:20}}>
                         <div className="kpi-label" style={{marginBottom:8}}>Top Team Members</div>

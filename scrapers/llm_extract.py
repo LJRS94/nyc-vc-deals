@@ -214,8 +214,24 @@ _VERB_PATTERNS = re.compile(
 )
 
 _HEADLINE_PATTERNS = re.compile(
-    r"(^the\s|^a\s|^an\s|exclusive:|breaking:|report:|"
-    r"update:|analysis:|why\s|how\s|what\s|when\s|who\s|where\s)",
+    r"(^a\s|^an\s|exclusive:|breaking:|report:|"
+    r"update:|analysis:|why\s|how\s|what\s|when\s|who\s|where\s|"
+    r"top\s+news|roundup|exploring\s)",
+    re.I
+)
+
+# Patterns that indicate a headline was used as a company name
+_HEADLINE_PREFIX_RE = re.compile(
+    r"^(?:(?:AI|Gen\s*AI|RPA|Legal|Digital|Enterprise|Defense\s*Tech|"
+    r"E-mobility|Smart\s*ring|Indoor\s*farming|Photonic|Data|Sales|"
+    r"Media|Events|Luggage|Betting|Flexible|Funding\s*Daily|"
+    r"Virtual|Cloud|Insurance|Identity|CPG|Israeli|Brooklyn|"
+    r"San\s*Francisco|Long\s*Island|SoHo|NYC|New\s*York|"
+    r"Anthropic|On-Demand|Correction|WealthStack|Big\s*Data|"
+    r"In-House|Patent|Contract|Subletting|Swiss|"
+    r"AI-Powered|AI-Coding|Generative\s*AI|Embedded|"
+    r"AI\s+Cloud|AI\s+Video|AI\s+digital|AI\s+field|AI\s+agent|AI\s+Client)"
+    r"[\s\-]+(?:startup|company|firm|platform|app|founder|operations|research)?)",
     re.I
 )
 
@@ -223,13 +239,19 @@ _HEADLINE_PATTERNS = re.compile(
 def validate_company_name(name: str) -> bool:
     """
     Return True if name looks like a valid company name.
-    Rejects names >60 chars, containing verbs, or headline patterns.
+    Rejects names >45 chars, containing verbs, headline patterns,
+    or common headline-as-name prefixes.
     """
-    if not name or len(name) > 60:
+    if not name or len(name) > 45:
         return False
     if _VERB_PATTERNS.search(name):
         return False
     if _HEADLINE_PATTERNS.search(name):
+        return False
+    if _HEADLINE_PREFIX_RE.search(name):
+        return False
+    # Reject names containing "startup" (headline artifacts)
+    if re.search(r"\bstartup\b", name, re.I):
         return False
     # Reject if it's mostly lowercase words (likely a sentence fragment)
     words = [w for w in name.split() if w]

@@ -261,6 +261,14 @@ def init_db(db_path: str = DB_PATH):
     """)
 
     conn.commit()
+
+    # Initialize QC tables
+    try:
+        from quality_control import init_qc_tables
+        init_qc_tables(conn)
+    except ImportError:
+        pass  # QC module not yet available during early init
+
     print(f"[DB] Initialized database at {db_path}")
 
 

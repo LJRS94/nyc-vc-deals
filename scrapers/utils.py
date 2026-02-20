@@ -307,6 +307,70 @@ def validate_deal_amount(amount: Optional[float], stage: str = "Unknown") -> boo
     return amount <= cap
 
 
+STAGE_ORDER = {"Pre-Seed": 0, "Seed": 1, "Series A": 2, "Series B": 3, "Series C+": 4, "Unknown": -1}
+
+
+def is_duplicate_deal(conn, company_name: str, stage: str,
+                      amount: Optional[float] = None,
+                      date_announced: Optional[str] = None) -> bool:
+    """
+    Smart dedup: returns True if this deal is a duplicate of an existing one.
+    Keeps legitimate multi-round deals (different stage or >6 months apart).
+
+    Rules:
+    - Same company + same stage + same date → duplicate
+    - Same company + same stage + dates <6 months apart → duplicate
+    - Same company + same stage + dates >6 months apart → NEW round (keep)
+    - Same company + different stage → NEW round (keep)
+    - Same company + same stage + no dates → duplicate (can't distinguish)
+    """
+    norm = normalize_company_name(company_name)
+    if not norm:
+        return False
+
+    existing = conn.execute(
+        "SELECT id, stage, amount_usd, date_announced FROM deals "
+        "WHERE company_name_normalized = ?",
+        (norm,)
+    ).fetchall()
+
+    if not existing:
+        return False
+
+    for row in existing:
+        ex_stage = row["stage"]
+        ex_amount = row["amount_usd"]
+        ex_date = row["date_announced"]
+
+        # Different stage → always a new round (unless stage is Unknown)
+        if stage != "Unknown" and ex_stage != "Unknown" and stage != ex_stage:
+            continue  # check other existing deals
+
+        # Same stage (or one is Unknown) — check dates
+        if date_announced and ex_date:
+            try:
+                from datetime import datetime
+                d1 = datetime.strptime(date_announced, "%Y-%m-%d")
+                d2 = datetime.strptime(ex_date, "%Y-%m-%d")
+                gap_days = abs((d1 - d2).days)
+                if gap_days > 180:  # >6 months apart → likely new round
+                    continue
+            except (ValueError, TypeError):
+                pass  # can't parse dates, fall through to duplicate
+
+        # Same stage + close dates (or no dates) → check amounts
+        if amount and ex_amount:
+            # Significantly different amounts → likely different round
+            ratio = max(amount, ex_amount) / max(min(amount, ex_amount), 1)
+            if ratio > 2.0:  # more than 2x difference
+                continue
+
+        # All checks passed → this is a duplicate
+        return True
+
+    return False
+
+
 def parse_investors(text: str) -> Tuple[List[str], Optional[str]]:
     """
     Parse an investor string.
