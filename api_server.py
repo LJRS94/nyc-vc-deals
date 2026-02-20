@@ -76,12 +76,13 @@ def auth_register():
     if len(password) < 4:
         return jsonify({"error": "Password must be at least 4 characters"}), 400
     conn = get_connection()
-    existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-    if existing:
+    try:
+        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        if existing:
+            return jsonify({"error": "Username already taken"}), 409
+        user = create_user(conn, username, generate_password_hash(password), display_name)
+    finally:
         conn.close()
-        return jsonify({"error": "Username already taken"}), 409
-    user = create_user(conn, username, generate_password_hash(password), display_name)
-    conn.close()
     session["user_id"] = user["id"]
     session["user_name"] = user["display_name"]
     return jsonify({"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user["display_name"]}})
@@ -95,8 +96,10 @@ def auth_login():
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
     conn = get_connection()
-    user = get_user_by_username(conn, username)
-    conn.close()
+    try:
+        user = get_user_by_username(conn, username)
+    finally:
+        conn.close()
     if not user or not check_password_hash(user["password_hash"], password):
         return jsonify({"error": "Invalid username or password"}), 401
     session["user_id"] = user["id"]
@@ -389,8 +392,9 @@ def _start_scheduler():
 @app.route("/api/scrape", methods=["POST"])
 def trigger_scrape():
     """Manually trigger a background scrape."""
-    if _scrape_status["running"]:
+    if not _scrape_lock.acquire(blocking=False):
         return jsonify({"status": "already_running", **_scrape_status}), 409
+    _scrape_lock.release()
     threading.Thread(target=_run_scrape_background, daemon=True).start()
     return jsonify({"status": "started", "message": "Scrape started in background"})
 

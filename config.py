@@ -4,6 +4,7 @@ All magic numbers, URLs, thresholds, and env-var lookups in one place.
 """
 
 import os
+import secrets
 
 # ── Database ─────────────────────────────────────────────────
 DB_PATH = os.environ.get(
@@ -14,7 +15,7 @@ DB_PATH = os.environ.get(
 # ── Server ───────────────────────────────────────────────────
 API_PORT = int(os.environ.get("PORT", 5000))
 API_HOST = "0.0.0.0"
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
+SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
 # ── HTTP / Fetcher ───────────────────────────────────────────
 REQUEST_TIMEOUT = 15          # default seconds per request

@@ -456,7 +456,7 @@ def merge_cross_source_duplicates(conn) -> int:
                 if (parsed[-1] - parsed[0]).days > 180:
                     continue  # too far apart — likely different rounds
             except (ValueError, TypeError):
-                pass
+                continue  # unparseable dates — skip merge to be safe
 
         # Pick the keeper: highest confidence, then largest amount
         best_idx = 0

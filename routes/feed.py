@@ -80,9 +80,9 @@ def get_deal_feed():
             "source_url": r["source_url"],
             "confidence_score": r["confidence_score"],
             "category": r["category"],
-            "firms": r["firms"].split(",") if r["firms"] else [],
-            "lead_firms": r["lead_firms"].split(",") if r["lead_firms"] else [],
-            "investors": r["investors"].split(",") if r["investors"] else [],
+            "firms": [x for x in (r["firms"] or "").split(",") if x],
+            "lead_firms": [x for x in (r["lead_firms"] or "").split(",") if x],
+            "investors": [x for x in (r["investors"] or "").split(",") if x],
             "founders": founders,
             "total_raised": total_raised,
         })
@@ -163,5 +163,5 @@ def get_feed_top_investors():
     conn.close()
     return jsonify([{
         **dict(r),
-        "companies": r["companies"].split(",") if r["companies"] else []
+        "companies": [x for x in (r["companies"] or "").split(",") if x]
     } for r in rows])

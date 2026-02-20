@@ -256,6 +256,122 @@ def deals_de_incorporated():
     })
 
 
+@deals_bp.route("/api/deals/velocity", methods=["GET"])
+def deals_velocity():
+    """Deal velocity — counts and capital for recent periods with trend vs prior period."""
+    conn = get_connection()
+    periods = {}
+    for label, days in [("7d", 7), ("30d", 30), ("90d", 90)]:
+        cur = conn.execute("""
+            SELECT COUNT(*) as count,
+                   COALESCE(SUM(amount_usd), 0) as capital
+            FROM deals WHERE date_announced >= date('now', ?)
+        """, (f"-{days} days",)).fetchone()
+        prev = conn.execute("""
+            SELECT COUNT(*) as count,
+                   COALESCE(SUM(amount_usd), 0) as capital
+            FROM deals WHERE date_announced >= date('now', ?)
+              AND date_announced < date('now', ?)
+        """, (f"-{days * 2} days", f"-{days} days")).fetchone()
+        cur_count, cur_cap = cur["count"], cur["capital"]
+        prev_count, prev_cap = prev["count"], prev["capital"]
+        periods[label] = {
+            "count": cur_count,
+            "capital": cur_cap,
+            "prev_count": prev_count,
+            "prev_capital": prev_cap,
+            "count_trend": round((cur_count - prev_count) / max(prev_count, 1) * 100),
+            "capital_trend": round((cur_cap - prev_cap) / max(prev_cap, 1) * 100),
+        }
+    conn.close()
+    return jsonify(periods)
+
+
+@deals_bp.route("/api/deals/followons", methods=["GET"])
+def deals_followons():
+    """Companies with multiple funding rounds (follow-on detection)."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT company_name_normalized, company_name,
+               GROUP_CONCAT(id) as ids,
+               GROUP_CONCAT(stage, '|') as stages,
+               GROUP_CONCAT(COALESCE(amount_usd, 0), '|') as amounts,
+               GROUP_CONCAT(COALESCE(date_announced, ''), '|') as dates,
+               COUNT(*) as round_count
+        FROM deals
+        WHERE company_name_normalized IS NOT NULL
+        GROUP BY company_name_normalized
+        HAVING COUNT(*) > 1
+        ORDER BY round_count DESC, company_name
+    """).fetchall()
+    followons = []
+    for r in rows:
+        stages = r["stages"].split("|")
+        amounts = r["amounts"].split("|")
+        dates = r["dates"].split("|")
+        rounds = []
+        for i in range(len(stages)):
+            amt = float(amounts[i]) if amounts[i] and amounts[i] != "0" else None
+            rounds.append({"stage": stages[i], "amount_usd": amt, "date": dates[i] or None})
+        rounds.sort(key=lambda x: x["date"] or "")
+        followons.append({
+            "company_name": r["company_name"],
+            "round_count": r["round_count"],
+            "rounds": rounds,
+        })
+    conn.close()
+    return jsonify(followons)
+
+
+@deals_bp.route("/api/deals/completeness", methods=["GET"])
+def deals_completeness():
+    """Data completeness stats — % of deals with each key field filled."""
+    conn = get_connection()
+    total = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+    if total == 0:
+        conn.close()
+        return jsonify({"total": 0, "fields": {}})
+    fields = {}
+    for col, label in [
+        ("amount_usd", "amount"), ("company_website", "website"),
+        ("company_description", "description"), ("date_announced", "date"),
+        ("category_id", "sector"),
+    ]:
+        filled = conn.execute(
+            f"SELECT COUNT(*) FROM deals WHERE {col} IS NOT NULL AND {col} != ''"
+        ).fetchone()[0]
+        fields[label] = {"filled": filled, "pct": round(filled / total * 100)}
+    # Investors linked
+    with_inv = conn.execute(
+        "SELECT COUNT(DISTINCT deal_id) FROM deal_firms"
+    ).fetchone()[0]
+    fields["investors"] = {"filled": with_inv, "pct": round(with_inv / total * 100)}
+    conn.close()
+    return jsonify({"total": total, "fields": fields})
+
+
+@deals_bp.route("/api/firms/coinvestors", methods=["GET"])
+def firms_coinvestors():
+    """Co-investor matrix — pairs of firms that frequently co-invest."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT f1.name as firm_a, f2.name as firm_b,
+               COUNT(DISTINCT df1.deal_id) as shared_deals,
+               COALESCE(SUM(d.amount_usd), 0) as shared_capital
+        FROM deal_firms df1
+        JOIN deal_firms df2 ON df1.deal_id = df2.deal_id AND df1.firm_id < df2.firm_id
+        JOIN firms f1 ON df1.firm_id = f1.id
+        JOIN firms f2 ON df2.firm_id = f2.id
+        JOIN deals d ON df1.deal_id = d.id
+        GROUP BY df1.firm_id, df2.firm_id
+        HAVING shared_deals >= 2
+        ORDER BY shared_deals DESC
+        LIMIT 50
+    """).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
 @deals_bp.route("/api/categories", methods=["GET"])
 def get_categories():
     conn = get_connection()

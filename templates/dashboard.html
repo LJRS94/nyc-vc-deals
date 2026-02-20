@@ -84,7 +84,8 @@
     const $=v=>{if(!v&&v!==0)return"—";if(v>=1e9)return`$${(v/1e9).toFixed(1)}B`;if(v>=1e6)return`$${(v/1e6).toFixed(1)}M`;if(v>=1e3)return`$${(v/1e3).toFixed(0)}K`;return`$${v}`;};
     const SC={"Pre-Seed":"#f97316",Seed:"#22c55e","Series A":"#6366f1","Series B":"#ec4899","Series C+":"#a855f7",Unknown:"#6b7280"};
     const CC={"AI / Machine Learning":"#818cf8",Fintech:"#34d399","Health & Biotech":"#f472b6",Cybersecurity:"#fb923c","Web3 / Crypto":"#a78bfa","Real Estate / Proptech":"#2dd4bf","Insurance / Insurtech":"#f59e0b","HR / Future of Work":"#38bdf8","Developer Tools":"#4ade80","Media & Entertainment":"#e879f9","SaaS / Enterprise":"#60a5fa","Consumer / D2C":"#fb7185","Climate / Cleantech":"#84cc16","Marketplace":"#fb923c","Other":"#6b7280"};
-    const SRCS = {alleywatch:"🗽 AlleyWatch",sec_filing:"📋 SEC",news_article:"📰 News",de_filing:"🏛 Delaware",google_news:"🔍 Google",other:"📄 Other"};
+    const SRCS = {alleywatch:"🗽 AlleyWatch",sec_filing:"📋 SEC",news_article:"📰 News",de_filing:"🏛 Delaware",google_news:"🔍 Google",other:"📄 Other",ny_dos:"🏙 NY DOS"};
+    const dealCompleteness = d => { let f=0,t=5; if(d.amount_usd)f++; if(d.description)f++; if(d.category)f++; if(d.date_announced)f++; if((d.firms||[]).length)f++; return Math.round(f/t*100); };
     const srcIcon = s => (SRCS[s]||"📄").split(" ")[0];
 
     function Badge({t,c}) { return <span className="badge" style={{background:(c||"#555")+"18",color:c||"#999",border:`1px solid ${(c||"#555")}25`}}>{t}</span>; }
@@ -116,22 +117,30 @@
       </tbody></table>;
     }
 
-    function PortfolioTable({companies, showFirm}) {
+    function PortfolioTable({companies, showFirm, linkedDeals}) {
       return <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
         <th style={{cursor:"default"}}>Company</th>
         {showFirm && <th style={{cursor:"default"}}>Firm</th>}
         <th style={{cursor:"default"}}>Sector</th>
         <th style={{cursor:"default"}}>Lead Partner</th>
+        {linkedDeals && <th style={{cursor:"default"}}>Funding</th>}
         <th style={{cursor:"default"}}>Website</th>
       </tr></thead><tbody>
-        {companies.map((c,i) =>
-          <tr key={c.id||i} className={i%2?"":"stripe"}>
+        {companies.map((c,i) => {
+          const deal = linkedDeals && linkedDeals[(c.company_name||"").toLowerCase()];
+          return <tr key={c.id||i} className={i%2?"":"stripe"}>
             <td><div style={{fontWeight:600,color:"#eee"}}>{c.company_name}</div>
               {c.description && <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,maxWidth:300,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.description}</div>}
             </td>
             {showFirm && <td><span style={{color:"#a78bfa",fontSize:11.5,fontWeight:500}}>{c.firm_name}</span></td>}
             <td style={{color:"#777",fontSize:11}}>{c.sector||"—"}</td>
             <td style={{color:"#888",fontSize:11}}>{c.lead_partner||"—"}</td>
+            {linkedDeals && <td>
+              {deal ? <span style={{display:"flex",gap:4,alignItems:"center"}}>
+                <Badge t={deal.stage} c={SC[deal.stage]} />
+                {deal.amount_usd && <span className="mono green" style={{fontSize:10.5}}>{$(deal.amount_usd)}</span>}
+              </span> : <span className="muted" style={{fontSize:10}}>—</span>}
+            </td>}
             <td>{c.company_website
               ? <a href={c.company_website.startsWith("http")?c.company_website:"https://"+c.company_website} target="_blank" rel="noopener"
                   style={{color:"#6366f1",fontSize:11,textDecoration:"none"}}>
@@ -139,8 +148,8 @@
                 </a>
               : <span className="muted">—</span>}
             </td>
-          </tr>
-        )}
+          </tr>;
+        })}
       </tbody></table>;
     }
 
@@ -259,6 +268,11 @@
       const [loading, setLoading] = useState(true);
       const [view, setView] = useState("grid");
       const [selPortFirm, setSelPortFirm] = useState(null);
+      const [linkedPortfolio, setLinkedPortfolio] = useState([]);
+      const [velocity, setVelocity] = useState(null);
+      const [coinvestors, setCoinvestors] = useState([]);
+      const [followons, setFollowons] = useState([]);
+      const [completeness, setCompleteness] = useState(null);
       const [q, setQ] = useState("");
       const [qBuf, setQBuf] = useState("");
       const [stgF, setStgF] = useState("All");
@@ -295,12 +309,22 @@
           fetch("/api/investors").then(r=>r.json()),
           fetch("/api/portfolio").then(r=>r.json()),
           fetch("/api/me").then(r=>r.json()),
-        ]).then(([feed, st, fi, inv, port, me]) => {
+          fetch("/api/deals/velocity").then(r=>r.json()),
+          fetch("/api/firms/coinvestors").then(r=>r.json()),
+          fetch("/api/deals/followons").then(r=>r.json()),
+          fetch("/api/deals/completeness").then(r=>r.json()),
+          fetch("/api/portfolio/linked").then(r=>r.json()),
+        ]).then(([feed, st, fi, inv, port, me, vel, coinv, foll, comp, linked]) => {
           setDeals(feed.deals || []);
           setStats(st);
           setFirms(fi || []);
           setInvestors(inv || []);
           setPortfolio(port || {companies:[], firms:[], total:0});
+          setVelocity(vel || null);
+          setCoinvestors(coinv || []);
+          setFollowons(foll || []);
+          setCompleteness(comp || null);
+          setLinkedPortfolio(linked || []);
           if (me.logged_in) {
             setUser(me);
             fetch("/api/saved/ids").then(r=>r.ok?r.json():null).then(d=>{ if(d) setSavedIds(new Set(d.ids)); });
@@ -446,6 +470,11 @@
         return Object.values(m).map(c=>({...c,avg:c.cap/c.cnt,firms:[...c.firms]})).sort((a,b)=>b.cap-a.cap);
       }, [deals]);
 
+      const linkedNames = useMemo(() => {
+        const m = {};
+        linkedPortfolio.forEach(l => { m[l.company_name.toLowerCase()] = l; });
+        return m;
+      }, [linkedPortfolio]);
       const totCap = rows.reduce((s,d) => s+(d.amount_usd||0), 0);
       const activeF = [stgF!=="All"&&stgF, catF!=="All"&&catF, selFirmName, q].filter(Boolean);
       const clearAll = () => { setStgF("All");setCatF("All");setSelFirm(null);setFirmProfile(null);setSelCat(null);setQ("");setQBuf(""); };
@@ -477,7 +506,7 @@
               {qBuf && <button onClick={()=>{setQBuf("");setQ("");}} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",color:"#555",fontSize:12}}>✕</button>}
             </div>
             <div style={{display:"flex",gap:1,background:"#141520",borderRadius:5,padding:2}}>
-              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"portfolio",l:"◈ Portfolio"},
+              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"insights",l:"◉ Insights"},{id:"portfolio",l:"◈ Portfolio"},
                 ...(user ? [{id:"saved",l:"★ Saved"}] : [])
               ].map(t=>
                 <button key={t.id} onClick={()=>{setView(t.id);if(t.id!=="firms"){setSelFirm(null);setFirmProfile(null);}setSelCat(null);if(t.id!=="portfolio")setSelPortFirm(null);if(t.id==="saved")setSelFolder(null);}}
@@ -574,9 +603,11 @@
                         <td>{lead && <button className="link" onClick={e=>{e.stopPropagation();goFirm(lead)}} style={{fontSize:11.5}}>★ {lead}</button>}
                           {others.length>0 && <span style={{fontSize:10,color:"#4a4b60",marginLeft:4}}>+{others.length}</span>}
                           {!(d.firms||[]).length && <span className="muted">—</span>}</td>
-                        <td style={{textAlign:"right",fontSize:10.5}} className="mono"
-                          style={{color:(d.confidence_score||0)>=.9?"#22c55e":(d.confidence_score||0)>=.7?"#f59e0b":"#ef4444",textAlign:"right",fontSize:10.5,fontFamily:"'IBM Plex Mono',monospace"}}>
-                          {d.confidence_score?`${(d.confidence_score*100).toFixed(0)}%`:"—"}</td>
+                        <td style={{color:(d.confidence_score||0)>=.9?"#22c55e":(d.confidence_score||0)>=.7?"#f59e0b":"#ef4444",textAlign:"right",fontSize:10.5,fontFamily:"'IBM Plex Mono',monospace"}}>
+                          {d.confidence_score?`${(d.confidence_score*100).toFixed(0)}%`:"—"}
+                          {(() => { const cp=dealCompleteness(d); const cc=cp>=80?"#34d399":cp>=60?"#f59e0b":"#ef4444";
+                            return <span title={`${cp}% complete`} style={{display:"inline-block",width:6,height:6,borderRadius:3,background:cc,marginLeft:5,verticalAlign:"middle"}} />;
+                          })()}</td>
                         <td style={{textAlign:"center",fontSize:11}} title={SRCS[d.source_type]}>{srcIcon(d.source_type)}</td>
                       </tr>
                       {exp && <tr><td colSpan={user?9:8} className="expand-row"><div className="fu" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:24,fontSize:11.5}}>
@@ -904,6 +935,89 @@
               </div>
             </div>}
 
+            {/* ── INSIGHTS ── */}
+            {view==="insights" && <div style={{flex:1,overflow:"auto",padding:20}} className="fu">
+              {/* Velocity KPIs */}
+              {velocity && <div style={{marginBottom:24}}>
+                <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Deal Velocity</div>
+                <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+                  {["7d","30d","90d"].map(p => { const v = velocity[p]; if(!v) return null;
+                    const arrow = v.count_trend > 0 ? "▲" : v.count_trend < 0 ? "▼" : "—";
+                    const arrowC = v.count_trend > 0 ? "#34d399" : v.count_trend < 0 ? "#ef4444" : "#555";
+                    return <div key={p} className="kpi" style={{minWidth:140}}>
+                      <div className="kpi-label">{p === "7d" ? "This Week" : p === "30d" ? "This Month" : "Last 90 Days"}</div>
+                      <div style={{display:"flex",alignItems:"baseline",gap:8}}>
+                        <span className="kpi-val mono" style={{color:"#eee"}}>{v.count}</span>
+                        <span style={{fontSize:11,color:arrowC,fontWeight:700}}>{arrow} {Math.abs(v.count_trend)}%</span>
+                      </div>
+                      <div className="mono" style={{fontSize:11,color:"#34d399",marginTop:2}}>{$(v.capital)}</div>
+                    </div>; })}
+                </div>
+              </div>}
+
+              {/* Data Completeness */}
+              {completeness && completeness.total > 0 && <div style={{marginBottom:24}}>
+                <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Data Completeness ({completeness.total} deals)</div>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                  {Object.entries(completeness.fields).map(([k,v]) => {
+                    const c = v.pct >= 80 ? "#34d399" : v.pct >= 50 ? "#f59e0b" : "#ef4444";
+                    return <div key={k} style={{background:"#101118",border:"1px solid #191a2e",borderRadius:6,padding:"8px 14px",minWidth:110}}>
+                      <div style={{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:"#444",marginBottom:4}}>{k}</div>
+                      <div className="mono" style={{fontSize:18,fontWeight:700,color:c}}>{v.pct}%</div>
+                      <div className="chart-bar" style={{marginTop:4}}><div className="chart-fill" style={{width:`${v.pct}%`,background:c}} /></div>
+                    </div>;
+                  })}
+                </div>
+              </div>}
+
+              {/* Co-Investor Matrix */}
+              {coinvestors.length > 0 && <div style={{marginBottom:24}}>
+                <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Top Co-Investor Pairs</div>
+                <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+                  <th style={{cursor:"default"}}>Firm A</th>
+                  <th style={{cursor:"default"}}>Firm B</th>
+                  <th style={{cursor:"default",textAlign:"right"}}>Shared Deals</th>
+                  <th style={{cursor:"default",textAlign:"right"}}>Shared Capital</th>
+                </tr></thead><tbody>
+                  {coinvestors.slice(0,20).map((c,i) =>
+                    <tr key={i} className={i%2?"":"stripe"}>
+                      <td><button className="link" onClick={()=>goFirm(c.firm_a)} style={{fontSize:12}}>{c.firm_a}</button></td>
+                      <td><button className="link" onClick={()=>goFirm(c.firm_b)} style={{fontSize:12}}>{c.firm_b}</button></td>
+                      <td className="mono" style={{textAlign:"right",fontWeight:700,color:"#ddd"}}>{c.shared_deals}</td>
+                      <td className="mono green" style={{textAlign:"right"}}>{$(c.shared_capital)}</td>
+                    </tr>
+                  )}
+                </tbody></table>
+              </div>}
+
+              {/* Follow-on Rounds */}
+              {followons.length > 0 && <div style={{marginBottom:24}}>
+                <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Follow-On Rounds ({followons.length} companies with multiple raises)</div>
+                {followons.slice(0,25).map((f,i) =>
+                  <div key={i} style={{background:"#101118",border:"1px solid #191a2e",borderRadius:6,padding:"10px 14px",marginBottom:6}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                      <span style={{fontSize:12,fontWeight:700,color:"#eee"}}>{f.company_name}</span>
+                      <Badge t={`${f.round_count} rounds`} c="#a78bfa" />
+                    </div>
+                    <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                      {f.rounds.map((r,j) => <React.Fragment key={j}>
+                        {j > 0 && <span style={{color:"#333",fontSize:11}}>→</span>}
+                        <div style={{background:"#0c0d14",border:"1px solid #1e1f38",borderRadius:4,padding:"3px 10px",display:"flex",alignItems:"center",gap:6}}>
+                          <Badge t={r.stage} c={SC[r.stage]} />
+                          {r.amount_usd && <span className="mono green" style={{fontSize:11}}>{$(r.amount_usd)}</span>}
+                          {r.date && <span className="mono muted" style={{fontSize:9.5}}>{r.date.slice(0,7)}</span>}
+                        </div>
+                      </React.Fragment>)}
+                    </div>
+                  </div>
+                )}
+              </div>}
+
+              {!velocity && !coinvestors.length && !followons.length && <div className="empty" style={{padding:60}}>
+                <div>No insights data yet — run scrapers to populate</div>
+              </div>}
+            </div>}
+
             {/* ── SAVED DEALS ── */}
             {view==="saved" && user && <div style={{flex:1,display:"flex",overflow:"hidden"}} className="fu">
               <div style={{width:220,borderRight:"1px solid #191a2e",overflow:"auto",flexShrink:0}}>
@@ -999,7 +1113,7 @@
                       <div style={{fontSize:16,fontWeight:700,color:"#eee"}}>{firmName}</div>
                       <div style={{fontSize:11,color:"#555",marginTop:2}}>{filtered.length} portfolio companies</div>
                     </div>}
-                    <PortfolioTable companies={filtered} showFirm={!selPortFirm} />
+                    <PortfolioTable companies={filtered} showFirm={!selPortFirm} linkedDeals={linkedNames} />
                     {filtered.length === 0 && <div className="empty" style={{padding:60}}>
                       {portfolio.total === 0
                         ? <div>No portfolio data yet — scraper runs on Fridays at 9 PM EST</div>

@@ -379,6 +379,26 @@ def partners_by_category():
     return jsonify(result)
 
 
+@firms_bp.route("/api/portfolio/linked", methods=["GET"])
+def get_portfolio_linked():
+    """Portfolio companies matched to deals via normalized company name."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT pc.id, pc.company_name, pc.company_website, pc.sector,
+               pc.lead_partner, f.name as firm_name,
+               d.id as deal_id, d.stage, d.amount_usd, d.date_announced,
+               c.name as category
+        FROM portfolio_companies pc
+        JOIN firms f ON pc.firm_id = f.id
+        JOIN deals d ON LOWER(REPLACE(REPLACE(REPLACE(pc.company_name, ' ', ''), '.', ''), ',', ''))
+                      = d.company_name_normalized
+        LEFT JOIN categories c ON d.category_id = c.id
+        ORDER BY d.date_announced DESC
+    """).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
 @firms_bp.route("/api/portfolio", methods=["GET"])
 def get_portfolio():
     """Portfolio companies scraped from VC firm websites."""
