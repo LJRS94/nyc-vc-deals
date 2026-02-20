@@ -1,7 +1,9 @@
 """Deal CRUD, stats, and analytics routes."""
 
+import csv
+import io
 from datetime import datetime
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request, Response
 
 from config import DEFAULT_PAGE_SIZE
 from database import get_connection
@@ -9,10 +11,18 @@ from database import get_connection
 deals_bp = Blueprint("deals", __name__)
 
 
+def _safe_int(value, default, lo=1, hi=10000):
+    """Parse an int query param, clamping to [lo, hi]."""
+    try:
+        return max(lo, min(int(value), hi))
+    except (TypeError, ValueError):
+        return default
+
+
 @deals_bp.route("/api/stats", methods=["GET"])
 def get_stats():
     """Dashboard overview stats — single combined query."""
-    conn = get_connection()
+    conn = g.db
     row = conn.execute("""
         SELECT
             (SELECT COUNT(*) FROM deals) as total_deals,
@@ -42,10 +52,10 @@ def get_stats():
 @deals_bp.route("/api/deals", methods=["GET"])
 def get_deals():
     """List deals with filtering and pagination."""
-    conn = get_connection()
+    conn = g.db
 
-    page = int(request.args.get("page", 1))
-    per_page = int(request.args.get("per_page", DEFAULT_PAGE_SIZE))
+    page = _safe_int(request.args.get("page", 1), 1, 1, 10000)
+    per_page = _safe_int(request.args.get("per_page", DEFAULT_PAGE_SIZE), DEFAULT_PAGE_SIZE, 1, 100)
     stage = request.args.get("stage")
     category = request.args.get("category")
     firm = request.args.get("firm")
@@ -163,7 +173,7 @@ def get_deals():
 
 @deals_bp.route("/api/deals/by-stage", methods=["GET"])
 def deals_by_stage():
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute("""
         SELECT stage, COUNT(*) as count,
                COALESCE(SUM(amount_usd), 0) as total_amount,
@@ -176,7 +186,7 @@ def deals_by_stage():
 
 @deals_bp.route("/api/deals/by-category", methods=["GET"])
 def deals_by_category():
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute("""
         SELECT c.name as category, COUNT(*) as count,
                COALESCE(SUM(d.amount_usd), 0) as total_amount
@@ -189,7 +199,7 @@ def deals_by_category():
 
 @deals_bp.route("/api/deals/by-month", methods=["GET"])
 def deals_by_month():
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute("""
         SELECT
             strftime('%Y-%m', COALESCE(date_announced, created_at)) as month,
@@ -205,7 +215,7 @@ def deals_by_month():
 @deals_bp.route("/api/deals/by-source", methods=["GET"])
 def deals_by_source():
     """Breakdown of deals by data source (news, SEC, DE filings, etc)."""
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute("""
         SELECT source_type, COUNT(*) as count,
                COALESCE(SUM(amount_usd), 0) as total_amount,
@@ -219,9 +229,9 @@ def deals_by_source():
 @deals_bp.route("/api/deals/de-incorporated", methods=["GET"])
 def deals_de_incorporated():
     """Deals from Delaware-incorporated companies (most VC-backed startups)."""
-    conn = get_connection()
-    page = int(request.args.get("page", 1))
-    per_page = int(request.args.get("per_page", DEFAULT_PAGE_SIZE))
+    conn = g.db
+    page = _safe_int(request.args.get("page", 1), 1, 1, 10000)
+    per_page = _safe_int(request.args.get("per_page", DEFAULT_PAGE_SIZE), DEFAULT_PAGE_SIZE, 1, 100)
     offset = (page - 1) * per_page
 
     rows = conn.execute("""
@@ -255,7 +265,7 @@ def deals_de_incorporated():
 @deals_bp.route("/api/deals/velocity", methods=["GET"])
 def deals_velocity():
     """Deal velocity — counts and capital for recent periods with trend vs prior period."""
-    conn = get_connection()
+    conn = g.db
     periods = {}
     for label, days in [("7d", 7), ("30d", 30), ("90d", 90)]:
         cur = conn.execute("""
@@ -285,7 +295,7 @@ def deals_velocity():
 @deals_bp.route("/api/deals/followons", methods=["GET"])
 def deals_followons():
     """Companies with multiple funding rounds (follow-on detection)."""
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute("""
         SELECT company_name_normalized, company_name,
                GROUP_CONCAT(id) as ids,
@@ -320,7 +330,7 @@ def deals_followons():
 @deals_bp.route("/api/deals/completeness", methods=["GET"])
 def deals_completeness():
     """Data completeness stats — % of deals with each key field filled."""
-    conn = get_connection()
+    conn = g.db
     total = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
     if total == 0:
         return jsonify({"total": 0, "fields": {}})
@@ -345,7 +355,7 @@ def deals_completeness():
 @deals_bp.route("/api/firms/coinvestors", methods=["GET"])
 def firms_coinvestors():
     """Co-investor matrix — pairs of firms that frequently co-invest."""
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute("""
         SELECT f1.name as firm_a, f2.name as firm_b,
                COUNT(DISTINCT df1.deal_id) as shared_deals,
@@ -366,7 +376,7 @@ def firms_coinvestors():
 @deals_bp.route("/api/deals/sector-trends", methods=["GET"])
 def sector_trends():
     """Monthly deal count and capital by sector for trend charts."""
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute("""
         SELECT
             strftime('%Y-%m', COALESCE(d.date_announced, d.created_at)) as month,
@@ -383,8 +393,68 @@ def sector_trends():
     return jsonify([dict(r) for r in rows])
 
 
+@deals_bp.route("/api/export/csv", methods=["GET"])
+def export_csv():
+    """Stream all deals as CSV, respecting current filter params."""
+    conn = g.db
+
+    stage = request.args.get("stage")
+    category = request.args.get("category")
+    search = request.args.get("q")
+
+    where_clauses = []
+    params = []
+    if stage:
+        where_clauses.append("d.stage = ?")
+        params.append(stage)
+    if category:
+        where_clauses.append("c.name = ?")
+        params.append(category)
+    if search:
+        where_clauses.append("(d.company_name LIKE ? OR d.raw_text LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+    rows = conn.execute(f"""
+        SELECT DISTINCT
+            d.company_name, d.stage, d.amount_usd,
+            d.date_announced, d.source_type, d.source_url,
+            d.confidence_score, d.company_website,
+            c.name as category,
+            GROUP_CONCAT(DISTINCT f.name) as firms
+        FROM deals d
+        LEFT JOIN categories c ON d.category_id = c.id
+        LEFT JOIN deal_firms df ON d.id = df.deal_id
+        LEFT JOIN firms f ON df.firm_id = f.id
+        WHERE {where_sql}
+        GROUP BY d.id
+        ORDER BY d.date_announced DESC
+    """, params).fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Company", "Stage", "Amount (USD)", "Date Announced",
+        "Source", "Source URL", "Confidence", "Website", "Category", "Firms"
+    ])
+    for r in rows:
+        writer.writerow([
+            r["company_name"], r["stage"], r["amount_usd"],
+            r["date_announced"], r["source_type"], r["source_url"],
+            r["confidence_score"], r["company_website"],
+            r["category"], r["firms"],
+        ])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=nyc_vc_deals.csv"},
+    )
+
+
 @deals_bp.route("/api/categories", methods=["GET"])
 def get_categories():
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute("SELECT * FROM categories ORDER BY name").fetchall()
     return jsonify([dict(r) for r in rows])

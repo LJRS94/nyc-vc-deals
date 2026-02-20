@@ -1,6 +1,6 @@
 """Portfolio verification routes — firm-website-confirmed deal attributions."""
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
 from database import get_connection
 
@@ -80,7 +80,7 @@ def run_portfolio_verification(conn):
 @verified_bp.route("/api/verified", methods=["GET"])
 def get_verified():
     """Portfolio verification dashboard — stats and verified deal-firm links."""
-    conn = get_connection()
+    conn = g.db
 
     # Overall stats
     total_links = conn.execute("SELECT COUNT(*) FROM deal_firms").fetchone()[0]
@@ -172,7 +172,7 @@ def get_verified():
 @verified_bp.route("/api/verified/run", methods=["POST"])
 def run_verification():
     """Re-run portfolio verification (after new portfolio scrape)."""
-    conn = get_connection()
+    conn = g.db
     result = run_portfolio_verification(conn)
     return jsonify({"ok": True, **result})
 
@@ -180,7 +180,7 @@ def run_verification():
 @verified_bp.route("/api/verified/unmatched", methods=["GET"])
 def get_unmatched():
     """Portfolio companies that DON'T match any deal — potential data gaps."""
-    conn = get_connection()
+    conn = g.db
     firm_id = request.args.get("firm_id", type=int)
 
     sql = """

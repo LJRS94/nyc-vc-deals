@@ -10,6 +10,7 @@ V.06 changes:
 """
 
 import re
+import threading
 from datetime import datetime
 from functools import lru_cache
 from typing import Optional, List, Tuple, Dict
@@ -232,23 +233,30 @@ def company_names_match(a: str, b: str, threshold: float = FUZZY_NAME_THRESHOLD)
 # ── Deal filters ─────────────────────────────────────────────
 
 _firm_names_cache = None  # cached set of normalized firm names
+_firm_cache_lock = threading.Lock()
 
 
 def _get_firm_names(conn) -> set:
-    """Load and cache normalized firm names from DB."""
+    """Load and cache normalized firm names from DB (thread-safe)."""
     global _firm_names_cache
-    if _firm_names_cache is None:
+    if _firm_names_cache is not None:
+        return _firm_names_cache
+    with _firm_cache_lock:
+        if _firm_names_cache is not None:
+            return _firm_names_cache  # another thread populated it
         rows = conn.execute("SELECT name FROM firms").fetchall()
-        _firm_names_cache = set()
+        cache = set()
         for r in rows:
-            _firm_names_cache.add(normalize_company_name(r["name"]))
+            cache.add(normalize_company_name(r["name"]))
+        _firm_names_cache = cache
     return _firm_names_cache
 
 
 def clear_firm_cache():
     """Clear the firm name cache (call after seeding firms)."""
     global _firm_names_cache
-    _firm_names_cache = None
+    with _firm_cache_lock:
+        _firm_names_cache = None
 
 
 def is_vc_firm(conn, company_name: str) -> bool:

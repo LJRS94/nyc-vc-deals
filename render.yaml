@@ -4,9 +4,15 @@ services:
     runtime: python
     pythonVersion: "3.11"
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python -c "from database import init_db; init_db()"
     startCommand: gunicorn api_server:app --bind 0.0.0.0:$PORT --workers 4 --timeout 120
     healthCheckPath: /health
+    disk:
+      name: vc-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: SECRET_KEY
         generateValue: true
+      - key: DATABASE_PATH
+        value: /var/data/nyc_vc_deals.db

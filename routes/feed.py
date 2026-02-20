@@ -2,7 +2,7 @@
 
 import re as _re
 from datetime import datetime
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
 from config import FEED_MAX_RESULTS, TOP_INVESTORS_LIMIT
 from database import get_connection
@@ -10,11 +10,19 @@ from database import get_connection
 feed_bp = Blueprint("feed", __name__)
 
 
+def _safe_int(value, default, lo=1, hi=10000):
+    """Parse an int query param, clamping to [lo, hi]."""
+    try:
+        return max(lo, min(int(value), hi))
+    except (TypeError, ValueError):
+        return default
+
+
 @feed_bp.route("/api/feed", methods=["GET"])
 def get_deal_feed():
     """Live deal feed — most recent deals from all sources, timeline view."""
-    conn = get_connection()
-    days = int(request.args.get("days", 9999))
+    conn = g.db
+    days = _safe_int(request.args.get("days", 9999), 9999, 1, 9999)
     source = request.args.get("source")
     min_amount = request.args.get("min_amount", type=float)
     stage = request.args.get("stage")
@@ -126,7 +134,7 @@ def get_deal_feed():
                 date_obj = datetime.strptime(d["date_announced"], "%Y-%m-%d")
                 week_key = date_obj.strftime("%Y-W%U")
                 by_week[week_key] = by_week.get(week_key, 0) + 1
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
     return jsonify({
@@ -145,8 +153,8 @@ def get_deal_feed():
 @feed_bp.route("/api/feed/timeline", methods=["GET"])
 def get_deal_timeline():
     """Aggregated deal counts and capital by day for charting."""
-    conn = get_connection()
-    days = int(request.args.get("days", 9999))
+    conn = g.db
+    days = _safe_int(request.args.get("days", 9999), 9999, 1, 9999)
     rows = conn.execute("""
         SELECT
             d.date_announced as date,
@@ -164,8 +172,8 @@ def get_deal_timeline():
 @feed_bp.route("/api/feed/top-investors", methods=["GET"])
 def get_feed_top_investors():
     """Top investors by deal count in recent feed window."""
-    conn = get_connection()
-    days = int(request.args.get("days", 9999))
+    conn = g.db
+    days = _safe_int(request.args.get("days", 9999), 9999, 1, 9999)
     rows = conn.execute("""
         SELECT
             i.name, i.title,

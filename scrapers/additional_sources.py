@@ -145,10 +145,18 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
                 )
 
                 if resp.status_code == 429:
-                    logger.warning("[OpenCorporates] Rate limited — stopping")
-                    break
+                    logger.warning("[OpenCorporates] Rate limited — backing off 30s")
+                    time.sleep(30)
+                    # Retry once after backoff
+                    resp = fetch(
+                        "https://api.opencorporates.com/v0.4/companies/search",
+                        params=params, timeout=15, ttl=OPENCORPORATES_TTL,
+                    )
+                    if resp.status_code == 429:
+                        logger.warning("[OpenCorporates] Still rate limited — stopping")
+                        break
                 if resp.status_code != 200:
-                    logger.debug(f"[OpenCorporates] HTTP {resp.status_code} for term '{term}'")
+                    logger.warning(f"[OpenCorporates] HTTP {resp.status_code} for term '{term}'")
                     stats["errors"] += 1
                     continue
 
@@ -165,8 +173,8 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
                 logger.warning(f"[OpenCorporates] Search failed for '{term}': {e}")
                 stats["errors"] += 1
 
-            # Rate limit: 1s between queries
-            time.sleep(1)
+            # Rate limit: 3s between queries (free tier is strict)
+            time.sleep(3)
 
         stats["found"] = len(all_companies)
         logger.info(f"[OpenCorporates] Collected {stats['found']} companies total")
@@ -222,8 +230,8 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
         try:
             conn_err = get_connection()
             finish_scrape(conn_err, log_id, "error", stats["found"], stats["new"], str(e))
-        except Exception:
-            pass
+        except (OSError, Exception) as log_err:
+            logger.debug(f"[OpenCorporates] Failed to log error: {log_err}")
 
     logger.info(
         f"[OpenCorporates] Done: {stats['found']} found, {stats['new']} new, "
@@ -483,14 +491,23 @@ def run_ny_dos_scraper(days_back: int = 90) -> dict:
     if NY_DOS_APP_TOKEN:
         params["$$app_token"] = NY_DOS_APP_TOKEN
 
-    try:
-        resp = fetch(NY_DOS_SODA_URL, params=params, ttl=OPENCORPORATES_TTL)
-        if resp.status_code != 200:
-            logger.warning(f"[NY DOS] SODA API returned HTTP {resp.status_code}")
-            return stats
-        rows = resp.json()
-    except Exception as e:
-        logger.warning(f"[NY DOS] SODA API request failed: {e}")
+    rows = None
+    for attempt in range(3):
+        try:
+            resp = fetch(NY_DOS_SODA_URL, params=params, ttl=OPENCORPORATES_TTL)
+            if resp.status_code == 200:
+                rows = resp.json()
+                break
+            logger.warning(f"[NY DOS] SODA API returned HTTP {resp.status_code} (attempt {attempt+1}/3)")
+            if resp.status_code == 429:
+                time.sleep(5 * (attempt + 1))
+            else:
+                time.sleep(2)
+        except Exception as e:
+            logger.warning(f"[NY DOS] SODA API request failed (attempt {attempt+1}/3): {e}")
+            time.sleep(2)
+    if rows is None:
+        logger.error("[NY DOS] All retry attempts failed")
         return stats
 
     logger.info(f"[NY DOS] Fetched {len(rows)} recent NY corporations")

@@ -57,9 +57,9 @@ def _random_headers() -> dict:
 
 DEFAULT_HEADERS = _random_headers()
 
-# SEC requires identification
+# SEC requires identification — configurable via env var
 SEC_HEADERS = {
-    "User-Agent": "NYCVCScraper/1.0 (Luc@alleycorp.com)",
+    "User-Agent": os.environ.get("SEC_USER_AGENT", "NYCVCScraper/1.0 (contact@example.com)"),
     "Accept": "application/json,application/xml",
 }
 

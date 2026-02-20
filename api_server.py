@@ -9,8 +9,10 @@ import threading
 import logging
 from functools import wraps
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, send_from_directory, session
+from flask import Flask, g, jsonify, request, send_from_directory, session
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
@@ -22,6 +24,7 @@ from database import (
     get_user_preferences, set_user_preferences,
     save_deal, unsave_deal, update_saved_deal,
     get_saved_deals, get_saved_deal_ids, get_saved_folders,
+    reset_stuck_scrape_logs,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -34,6 +37,11 @@ from routes.verified import verified_bp
 
 app = Flask(__name__)
 CORS(app)
+limiter = Limiter(get_remote_address, app=app, default_limits=["200 per hour"],
+                  storage_uri="memory://")
+
+# ── Request size limit (16 MB) ──
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 # ── Auth Configuration ──
 app.secret_key = SECRET_KEY
@@ -42,6 +50,22 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=not os.environ.get("FLASK_DEBUG"),
 )
+
+
+# ── Per-request database connection via g.db ──
+@app.before_request
+def _open_db():
+    g.db = get_connection()
+
+
+@app.teardown_appcontext
+def _close_db(exc):
+    db = g.pop("db", None)
+    if db is not None:
+        try:
+            db.execute("SELECT 1")  # check if still alive before closing
+        except Exception:
+            pass
 
 # Register blueprints
 app.register_blueprint(deals_bp)
@@ -79,7 +103,7 @@ def login_required(f):
 @app.route("/health")
 def health_check():
     try:
-        conn = get_connection()
+        conn = g.db
         count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
         return jsonify({"status": "ok", "deals": count})
     except Exception as e:
@@ -105,7 +129,7 @@ def auth_register():
         return jsonify({"error": "Username must be at least 3 characters"}), 400
     if len(password) < 4:
         return jsonify({"error": "Password must be at least 4 characters"}), 400
-    conn = get_connection()
+    conn = g.db
     existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
     if existing:
         return jsonify({"error": "Username already taken"}), 409
@@ -122,7 +146,7 @@ def auth_login():
     password = data.get("password") or ""
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
-    conn = get_connection()
+    conn = g.db
     user = get_user_by_username(conn, username)
     if not user or not check_password_hash(user["password_hash"], password):
         return jsonify({"error": "Invalid username or password"}), 401
@@ -153,7 +177,7 @@ def api_me():
 @app.route("/api/preferences", methods=["GET"])
 @login_required
 def api_get_preferences():
-    conn = get_connection()
+    conn = g.db
     prefs = get_user_preferences(conn, session["user_id"])
     return jsonify(prefs)
 
@@ -162,7 +186,7 @@ def api_get_preferences():
 @login_required
 def api_set_preferences():
     data = request.get_json(force=True)
-    conn = get_connection()
+    conn = g.db
     set_user_preferences(conn, session["user_id"], data)
     return jsonify({"ok": True})
 
@@ -173,7 +197,7 @@ def api_set_preferences():
 @login_required
 def api_get_saved():
     folder = request.args.get("folder")
-    conn = get_connection()
+    conn = g.db
     deals = get_saved_deals(conn, session["user_id"], folder)
     return jsonify({"deals": deals})
 
@@ -185,7 +209,7 @@ def api_save_deal():
     deal_id = data.get("deal_id")
     if not deal_id:
         return jsonify({"error": "deal_id required"}), 400
-    conn = get_connection()
+    conn = g.db
     row_id = save_deal(conn, session["user_id"], deal_id,
                        folder=data.get("folder", "Default"),
                        notes=data.get("notes"))
@@ -196,7 +220,7 @@ def api_save_deal():
 @login_required
 def api_update_saved(deal_id):
     data = request.get_json(force=True)
-    conn = get_connection()
+    conn = g.db
     update_saved_deal(conn, session["user_id"], deal_id,
                       folder=data.get("folder"),
                       notes=data.get("notes"))
@@ -206,7 +230,7 @@ def api_update_saved(deal_id):
 @app.route("/api/saved/<int:deal_id>", methods=["DELETE"])
 @login_required
 def api_unsave_deal(deal_id):
-    conn = get_connection()
+    conn = g.db
     unsave_deal(conn, session["user_id"], deal_id)
     return jsonify({"ok": True})
 
@@ -214,7 +238,7 @@ def api_unsave_deal(deal_id):
 @app.route("/api/saved/folders", methods=["GET"])
 @login_required
 def api_saved_folders():
-    conn = get_connection()
+    conn = g.db
     folders = get_saved_folders(conn, session["user_id"])
     return jsonify({"folders": folders})
 
@@ -222,7 +246,7 @@ def api_saved_folders():
 @app.route("/api/saved/ids", methods=["GET"])
 @login_required
 def api_saved_ids():
-    conn = get_connection()
+    conn = g.db
     ids = get_saved_deal_ids(conn, session["user_id"])
     return jsonify({"ids": ids})
 
@@ -232,7 +256,7 @@ def api_saved_ids():
 @app.route("/api/notifications", methods=["GET"])
 @login_required
 def api_get_notifications():
-    conn = get_connection()
+    conn = g.db
     rows = conn.execute(
         "SELECT * FROM notifications WHERE user_id = ? OR user_id IS NULL "
         "ORDER BY created_at DESC LIMIT 50", (session["user_id"],)
@@ -247,7 +271,7 @@ def api_get_notifications():
 @app.route("/api/notifications/read", methods=["POST"])
 @login_required
 def api_mark_notifications_read():
-    conn = get_connection()
+    conn = g.db
     conn.execute(
         "UPDATE notifications SET read = 1 WHERE (user_id = ? OR user_id IS NULL) AND read = 0",
         (session["user_id"],)
@@ -383,6 +407,13 @@ def _run_scrape_background():
         _scrape_status["last_run"] = datetime.now().isoformat()
         logger.info("Background scrape starting...")
 
+        # Reset any stuck scrape_logs from prior crashes
+        try:
+            conn_reset = get_connection()
+            reset_stuck_scrape_logs(conn_reset)
+        except Exception as e:
+            logger.debug(f"Stuck log reset warning: {e}")
+
         from scrapers.news_scraper import run_news_scraper
         from scrapers.alleywatch_scraper import run_alleywatch_scraper
         from scrapers.sec_scraper import run_sec_scraper
@@ -397,7 +428,7 @@ def _run_scrape_background():
             logger.warning(f"Firm seeding warning: {e}")
 
         # Clean up VC firms mistakenly listed as startups (single SQL using firm names)
-        conn = get_connection()
+        conn = g.db
         try:
             firm_names = [r["name"] for r in conn.execute("SELECT name FROM firms").fetchall()]
             if firm_names:
@@ -422,7 +453,7 @@ def _run_scrape_background():
         # Initialize QC tables
         try:
             from quality_control import init_qc_tables, run_audit, update_auto_reject_patterns, merge_cross_source_duplicates
-            conn = get_connection()
+            conn = g.db
             init_qc_tables(conn)
             conn.close()
         except Exception as e:
@@ -439,7 +470,7 @@ def _run_scrape_background():
             logger.warning(f"SEC scraper warning: {e}")
 
         # Post-scrape: cross-source dedup + QC audit
-        conn = get_connection()
+        conn = g.db
 
         try:
             merged = merge_cross_source_duplicates(conn)
@@ -501,7 +532,7 @@ def _run_portfolio_scrape():
         seed_firms()
         run_portfolio_scraper()
 
-        conn = get_connection()
+        conn = g.db
         pc_count = conn.execute("SELECT COUNT(*) FROM portfolio_companies").fetchone()[0]
 
         # Auto-verify deal-firm links against portfolio data
@@ -588,7 +619,7 @@ def trigger_scrape():
 @app.route("/api/scrape/status", methods=["GET"])
 def scrape_status():
     """Check the status of background scraping."""
-    conn = get_connection()
+    conn = g.db
     deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
     return jsonify({**_scrape_status, "total_deals": deal_count})
 

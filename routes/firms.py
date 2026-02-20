@@ -1,16 +1,24 @@
 """Firm list, profiles, partners, portfolio, and investor routes."""
 
 from datetime import datetime
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
 from database import get_connection
 
 firms_bp = Blueprint("firms", __name__)
 
 
+def _safe_int(value, default, lo=1, hi=10000):
+    """Parse an int query param, clamping to [lo, hi]."""
+    try:
+        return max(lo, min(int(value), hi))
+    except (TypeError, ValueError):
+        return default
+
+
 @firms_bp.route("/api/firms", methods=["GET"])
 def get_firms():
-    conn = get_connection()
+    conn = g.db
     search = request.args.get("q", "")
 
     sql = """
@@ -35,7 +43,7 @@ def get_firms():
 
 @firms_bp.route("/api/firms/<int:firm_id>", methods=["GET"])
 def get_firm(firm_id):
-    conn = get_connection()
+    conn = g.db
     firm = conn.execute("SELECT * FROM firms WHERE id = ?", (firm_id,)).fetchone()
     if not firm:
         return jsonify({"error": "Firm not found"}), 404
@@ -62,13 +70,13 @@ def get_firm(firm_id):
 
 @firms_bp.route("/api/investors", methods=["GET"])
 def get_investors():
-    conn = get_connection()
+    conn = g.db
     firm_id = request.args.get("firm_id")
     role_filter = request.args.get("role")
+    page = _safe_int(request.args.get("page", 1), 1, 1, 10000)
+    per_page = _safe_int(request.args.get("per_page", 25), 25, 1, 100)
 
-    sql = """
-        SELECT i.*, f.name as firm_name, f.focus_sectors as firm_sectors,
-               COUNT(DISTINCT di.deal_id) as deal_count
+    base = """
         FROM investors i
         LEFT JOIN firms f ON i.firm_id = f.id
         LEFT JOIN deal_investors di ON i.id = di.investor_id
@@ -83,19 +91,31 @@ def get_investors():
         wheres.append("LOWER(i.title) LIKE ?")
         params.append(f"%{role_filter.lower()}%")
 
-    if wheres:
-        sql += " WHERE " + " AND ".join(wheres)
+    where_sql = (" WHERE " + " AND ".join(wheres)) if wheres else ""
 
-    sql += " GROUP BY i.id ORDER BY deal_count DESC, i.name"
+    total = conn.execute(
+        f"SELECT COUNT(DISTINCT i.id) {base}{where_sql}", params
+    ).fetchone()[0]
 
-    rows = conn.execute(sql, params).fetchall()
-    return jsonify([dict(r) for r in rows])
+    offset = (page - 1) * per_page
+    rows = conn.execute(
+        f"SELECT i.*, f.name as firm_name, f.focus_sectors as firm_sectors, "
+        f"COUNT(DISTINCT di.deal_id) as deal_count "
+        f"{base}{where_sql} GROUP BY i.id ORDER BY deal_count DESC, i.name "
+        f"LIMIT ? OFFSET ?",
+        params + [per_page, offset]
+    ).fetchall()
+
+    return jsonify({
+        "data": [dict(r) for r in rows],
+        "meta": {"total": total, "page": page, "per_page": per_page},
+    })
 
 
 @firms_bp.route("/api/investors/<int:investor_id>", methods=["GET"])
 def get_investor(investor_id):
     """Get a single investor/partner with their deals."""
-    conn = get_connection()
+    conn = g.db
     inv = conn.execute("""
         SELECT i.*, f.name as firm_name, f.website as firm_website,
                f.focus_sectors as firm_sectors
@@ -124,7 +144,7 @@ def get_investor(investor_id):
 @firms_bp.route("/api/firms/<int:firm_id>/partners", methods=["GET"])
 def get_firm_partners(firm_id):
     """Get all partners/GPs at a specific firm with their deal activity."""
-    conn = get_connection()
+    conn = g.db
     firm = conn.execute("SELECT * FROM firms WHERE id = ?", (firm_id,)).fetchone()
     if not firm:
         return jsonify({"error": "Firm not found"}), 404
@@ -169,7 +189,7 @@ def get_firm_partners(firm_id):
 @firms_bp.route("/api/firms/<int:firm_id>/profile")
 def get_firm_profile(firm_id):
     """Comprehensive firm profile — one request for the full Firms tab detail view."""
-    conn = get_connection()
+    conn = g.db
 
     firm = conn.execute("SELECT * FROM firms WHERE id = ?", (firm_id,)).fetchone()
     if not firm:
@@ -266,7 +286,7 @@ def get_firm_profile(firm_id):
                     deals_last_90d += 1
                 if (now - dt).days <= 365:
                     deals_last_year += 1
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
     # Funding history — batch-fetch all rounds for all companies (avoids N+1)
@@ -332,7 +352,21 @@ def get_firm_profile(firm_id):
 @firms_bp.route("/api/partners/by-category", methods=["GET"])
 def partners_by_category():
     """Subcategorize all partners/GPs by the deal categories they invest in."""
-    conn = get_connection()
+    conn = g.db
+    page = _safe_int(request.args.get("page", 1), 1, 1, 10000)
+    per_page = _safe_int(request.args.get("per_page", 50), 50, 1, 200)
+    offset = (page - 1) * per_page
+
+    total = conn.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT c.name, i.id
+            FROM investors i
+            JOIN deal_investors di ON i.id = di.investor_id
+            JOIN deals d ON di.deal_id = d.id
+            LEFT JOIN categories c ON d.category_id = c.id
+        )
+    """).fetchone()[0]
+
     rows = conn.execute("""
         SELECT
             c.name as category,
@@ -350,7 +384,8 @@ def partners_by_category():
         LEFT JOIN firms f ON i.firm_id = f.id
         GROUP BY c.name, i.id
         ORDER BY c.name, deal_count DESC
-    """).fetchall()
+        LIMIT ? OFFSET ?
+    """, (per_page, offset)).fetchall()
 
     result = {}
     for row in rows:
@@ -367,13 +402,16 @@ def partners_by_category():
             "total_invested": row["total_invested"],
         })
 
-    return jsonify(result)
+    return jsonify({
+        "data": result,
+        "meta": {"total": total, "page": page, "per_page": per_page},
+    })
 
 
 @firms_bp.route("/api/portfolio/linked", methods=["GET"])
 def get_portfolio_linked():
     """Portfolio companies matched to deals via normalized company name."""
-    conn = get_connection()
+    conn = g.db
     # Backfill normalized names if missing
     conn.execute("""
         UPDATE portfolio_companies
@@ -399,13 +437,13 @@ def get_portfolio_linked():
 @firms_bp.route("/api/portfolio", methods=["GET"])
 def get_portfolio():
     """Portfolio companies scraped from VC firm websites."""
-    conn = get_connection()
+    conn = g.db
     firm_id = request.args.get("firm_id", type=int)
     search = request.args.get("q", "")
+    page = _safe_int(request.args.get("page", 1), 1, 1, 10000)
+    per_page = _safe_int(request.args.get("per_page", 50), 50, 1, 200)
 
-    sql = """
-        SELECT pc.*, f.name as firm_name, f.website as firm_website,
-               f.focus_sectors as firm_sectors
+    base = """
         FROM portfolio_companies pc
         JOIN firms f ON pc.firm_id = f.id
     """
@@ -419,12 +457,20 @@ def get_portfolio():
         wheres.append("(pc.company_name LIKE ? OR f.name LIKE ? OR pc.sector LIKE ?)")
         params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
 
-    if wheres:
-        sql += " WHERE " + " AND ".join(wheres)
+    where_sql = (" WHERE " + " AND ".join(wheres)) if wheres else ""
 
-    sql += " ORDER BY f.name, pc.company_name"
+    total = conn.execute(
+        f"SELECT COUNT(*) {base}{where_sql}", params
+    ).fetchone()[0]
 
-    rows = conn.execute(sql, params).fetchall()
+    offset = (page - 1) * per_page
+    rows = conn.execute(
+        f"SELECT pc.*, f.name as firm_name, f.website as firm_website, "
+        f"f.focus_sectors as firm_sectors "
+        f"{base}{where_sql} ORDER BY f.name, pc.company_name "
+        f"LIMIT ? OFFSET ?",
+        params + [per_page, offset]
+    ).fetchall()
 
     firm_agg = conn.execute("""
         SELECT f.id, f.name, f.website, f.focus_sectors,
@@ -436,7 +482,7 @@ def get_portfolio():
     """).fetchall()
 
     return jsonify({
-        "companies": [dict(r) for r in rows],
-        "total": len(rows),
+        "data": [dict(r) for r in rows],
+        "meta": {"total": total, "page": page, "per_page": per_page},
         "firms": [dict(r) for r in firm_agg],
     })

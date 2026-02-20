@@ -6,10 +6,13 @@ SQLite database with models for deals, firms, investors, and categories.
 import sqlite3
 import os
 import re
+import logging
 import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get(
     "DATABASE_PATH",
@@ -63,7 +66,7 @@ def init_db(db_path: str = DB_PATH):
         if "company_name_normalized" not in cols:
             # Run migration for existing DB, then return
             migrate_db(db_path)
-            print(f"[DB] Initialized database at {db_path}")
+            logger.info(f"Initialized database at {db_path}")
             return
 
     cursor = conn.cursor()
@@ -292,9 +295,9 @@ def init_db(db_path: str = DB_PATH):
         from quality_control import init_qc_tables
         init_qc_tables(conn)
     except ImportError:
-        pass  # QC module not yet available during early init
+        logger.debug("QC module not yet available during early init")
 
-    print(f"[DB] Initialized database at {db_path}")
+    logger.info(f"Initialized database at {db_path}")
 
 
 @contextmanager
@@ -652,6 +655,22 @@ def finish_scrape(conn, log_id: int, status: str, deals_found: int = 0,
         conn.commit()
 
 
+def reset_stuck_scrape_logs(conn, max_age_hours: int = 2) -> int:
+    """Reset scrape_logs stuck in 'running' status for more than max_age_hours."""
+    updated = conn.execute(
+        """UPDATE scrape_logs
+           SET finished_at = ?, status = 'error',
+               error_message = 'Reset from stuck state (exceeded timeout)'
+           WHERE status = 'running'
+             AND datetime(started_at) < datetime('now', ?)""",
+        (datetime.utcnow().isoformat(), f"-{max_age_hours} hours")
+    ).rowcount
+    if updated:
+        conn.commit()
+        logger.info(f"Reset {updated} stuck scrape_log entries")
+    return updated
+
+
 def migrate_db(db_path: str = DB_PATH):
     """
     Run schema migrations on an existing database:
@@ -674,17 +693,17 @@ def migrate_db(db_path: str = DB_PATH):
             # Rollback removes the probe row — no DELETE needed
             conn.execute("ROLLBACK TO migration_check")
             conn.execute("RELEASE migration_check")
-            print("[DB] Schema already up to date")
+            logger.info("Schema already up to date")
             conn.close()
             return
         except sqlite3.IntegrityError:
             conn.execute("ROLLBACK TO migration_check")
             conn.execute("RELEASE migration_check")
             # Need to recreate the table for CHECK constraint
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug(f"Migration check error: {e}")
 
-    print("[DB] Running migration...")
+    logger.info("Running migration...")
 
     # SQLite doesn't support ALTER TABLE to modify CHECK constraints,
     # so we recreate the deals table.
@@ -764,8 +783,8 @@ def migrate_db(db_path: str = DB_PATH):
         )
     conn.commit()
     conn.close()
-    print(f"[DB] Migration complete: updated CHECK constraint, "
-          f"added company_name_normalized, backfilled {len(rows)} rows")
+    logger.info(f"Migration complete: updated CHECK constraint, "
+                f"added company_name_normalized, backfilled {len(rows)} rows")
 
 
 if __name__ == "__main__":
