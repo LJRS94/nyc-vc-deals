@@ -22,7 +22,7 @@ from database import (
 from fetcher import fetch, SEC_HEADERS
 from scrapers.utils import (
     classify_stage_from_amount, normalize_company_name, classify_sector,
-    should_skip_deal, validate_deal_amount,
+    should_skip_deal, validate_deal_amount, link_investors_to_deal,
 )
 from quality_control import validate_deal
 
@@ -608,6 +608,9 @@ def run_sec_scraper(days_back: int = 180):
                     "source_method": filing.get("source_method"),
                 })
 
+                # Build description from industry group
+                description = f"{industry} company" if industry else None
+
                 # ── Unified Quality Gate ──
                 accepted, reason, cleaned = validate_deal(
                     conn,
@@ -616,6 +619,7 @@ def run_sec_scraper(days_back: int = 180):
                     amount=amount,
                     date_announced=filing.get("filing_date"),
                     source_type="sec_filing",
+                    description=description,
                     is_nyc=True,  # already NYC-filtered above
                     raw_text=raw_text,
                     source_url=filing_url,
@@ -631,20 +635,23 @@ def run_sec_scraper(days_back: int = 180):
                 if deal_id:
                     total_new += 1
 
-                    # Link investors
+                    # Link investors via shared utility (creates both investor AND firm links)
                     if details and details.get("related_persons"):
-                        for person in details["related_persons"][:10]:
+                        investor_dicts = []
+                        for person in details["related_persons"][:15]:
                             if isinstance(person, dict):
                                 person_name = person["name"]
-                                person_title = person.get("title")
                             else:
                                 person_name = person
-                                person_title = None
-                            inv_kwargs = {}
-                            if person_title:
-                                inv_kwargs["title"] = person_title
-                            inv_id = upsert_investor(conn, person_name, **inv_kwargs)
-                            link_deal_investor(conn, deal_id, inv_id)
+                            investor_dicts.append({"name": person_name, "role": "participant"})
+                        if investor_dicts:
+                            link_investors_to_deal(
+                                conn, deal_id, investor_dicts,
+                                upsert_investor_fn=upsert_investor,
+                                link_deal_investor_fn=link_deal_investor,
+                                upsert_firm_fn=upsert_firm,
+                                link_deal_firm_fn=link_deal_firm,
+                            )
 
             finish_scrape(conn, log_id, "success", total_found, total_new)
 

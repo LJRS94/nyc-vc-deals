@@ -22,7 +22,7 @@ from config import MAX_COMPANY_NAME_LENGTH, DEDUP_DATE_GAP_DAYS
 from scrapers.utils import (
     normalize_company_name, normalize_stage, classify_stage_from_amount,
     validate_deal_amount, is_duplicate_deal, company_names_match,
-    should_skip_deal, classify_sector,
+    should_skip_deal, classify_sector, ensure_full_date,
 )
 from scrapers.llm_extract import validate_company_name, clean_company_name
 
@@ -202,6 +202,10 @@ def validate_deal(conn, company_name: str, stage: str = "Unknown",
 
     # ── 5. Date Validation ──
     if date_announced:
+        # Fix partial YYYY-MM dates by appending -01
+        fixed = ensure_full_date(date_announced)
+        if fixed:
+            date_announced = fixed
         try:
             d = datetime.strptime(date_announced, "%Y-%m-%d")
             # Reject dates more than 1 year in the future
@@ -228,6 +232,8 @@ def validate_deal(conn, company_name: str, stage: str = "Unknown",
         source_type=source_type,
         description=description,
         is_nyc=is_nyc,
+        source_url=kwargs.get("source_url"),
+        raw_text=raw_text,
     )
 
     # ── 8. Build cleaned data ──
@@ -250,30 +256,38 @@ def validate_deal(conn, company_name: str, stage: str = "Unknown",
         if k in kwargs and kwargs[k] is not None:
             cleaned[k] = kwargs[k]
 
+    # ── 9. Provenance warning (non-blocking) ──
+    if not kwargs.get("source_url"):
+        logger.warning(f"Deal '{company_name}' accepted without source_url (source={source_type})")
+    if not raw_text:
+        logger.warning(f"Deal '{company_name}' accepted without raw_text (source={source_type})")
+
     return True, "accepted", cleaned
 
 
 def _compute_confidence(company_name: str, stage: str, amount: float,
                         date_announced: str, source_type: str,
-                        description: str, is_nyc: bool) -> float:
+                        description: str, is_nyc: bool,
+                        source_url: str = None, raw_text: str = None) -> float:
     """
     Unified confidence scoring.
-    Source reliability + data completeness + NYC confirmation.
+    Source reliability + data completeness + provenance + NYC confirmation.
     """
     # Base by source reliability
     source_scores = {
-        "alleywatch": 0.90,
         "crunchbase": 0.85,
         "pitchbook": 0.85,
         "press_release": 0.75,
-        "news_article": 0.70,
-        "sec_filing": 0.65,
+        "news_article": 0.75,
+        "sec_filing": 0.75,
+        "alleywatch": 0.70,
+        "alleywatch_roundup": 0.60,
         "firm_website": 0.60,
         "google_news": 0.55,
         "de_filing": 0.50,
-        "other": 0.40,
+        "other": 0.45,
     }
-    base = source_scores.get(source_type, 0.40)
+    base = source_scores.get(source_type, 0.45)
 
     # Completeness bonuses/penalties
     if amount:
@@ -290,6 +304,12 @@ def _compute_confidence(company_name: str, stage: str, amount: float,
         base += 0.03
     if is_nyc:
         base += 0.05
+
+    # Provenance penalty — deals without source_url/raw_text are harder to verify
+    if not source_url:
+        base -= 0.10
+    if not raw_text:
+        base -= 0.05
 
     return max(0.1, min(1.0, round(base, 2)))
 

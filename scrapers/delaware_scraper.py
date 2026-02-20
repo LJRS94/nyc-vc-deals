@@ -32,6 +32,7 @@ from scrapers.utils import (
     should_skip_deal, is_nyc_related, classify_sector,
     normalize_stage, parse_amount, link_investors_to_deal,
 )
+from scrapers.news_scraper import extract_company_name, extract_investors
 from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
@@ -581,13 +582,19 @@ def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[in
     deal_kwargs = {k: v for k, v in cleaned.items() if k != "company_name"}
     deal_id = insert_deal(conn, cleaned["company_name"], **deal_kwargs)
 
-    # Link investors if available
+    # Link investors via shared utility (creates both investor AND firm links)
     if deal_id and filing_data.get("investors"):
+        investor_dicts = []
         for inv in filing_data["investors"]:
             inv_name = inv.get("name", "")
             if inv_name and len(inv_name) > 2:
-                inv_id = upsert_investor(conn, inv_name)
-                link_deal_investor(conn, deal_id, inv_id)
+                investor_dicts.append({"name": inv_name, "role": "participant"})
+        if investor_dicts:
+            link_investors_to_deal(
+                conn, deal_id, investor_dicts,
+                upsert_investor, link_deal_investor,
+                upsert_firm, link_deal_firm,
+            )
 
     return deal_id
 
@@ -664,8 +671,6 @@ def run_delaware_scraper(days_back: int = 14):
         total_found += len(news_articles)
 
         # ═══ DB PHASE: Batch insert all results ═══
-        from news_scraper import extract_company_name, extract_investors
-
         with batch_connection() as conn:
             # Insert Source 1 deals
             for company_name, filing_data in enriched_filings:
@@ -675,14 +680,30 @@ def run_delaware_scraper(days_back: int = 14):
 
             # Apply Source 2 DE verification updates
             for deal_id, company, de_info in de_updates:
+                de_entity = de_info.get("de_entity_name", "")
+                # Validate: confirm entity name roughly matches the deal company
+                if de_entity and company:
+                    from scrapers.utils import normalize_company_name as _norm
+                    norm_deal = _norm(company)
+                    norm_de = _norm(de_entity)
+                    if norm_deal and norm_de and (norm_deal not in norm_de and norm_de not in norm_deal):
+                        logger.warning(
+                            f"DE cross-ref mismatch: deal '{company}' vs DE entity '{de_entity}', skipping"
+                        )
+                        continue
+
+                annotation = (
+                    f" [DE incorporated: {de_entity},"
+                    f" file#{de_info.get('file_number', 'N/A')}]"
+                )
+                logger.info(f"DE cross-ref update for deal #{deal_id} ({company}): {annotation.strip()}")
                 conn.execute("""
                     UPDATE deals
                     SET raw_text = COALESCE(raw_text, '') || ? ,
                         updated_at = ?
                     WHERE id = ?
                 """, (
-                    f" [DE incorporated: {de_info.get('de_entity_name', '')},"
-                    f" file#{de_info.get('file_number', 'N/A')}]",
+                    annotation,
                     datetime.utcnow().isoformat(),
                     deal_id,
                 ))

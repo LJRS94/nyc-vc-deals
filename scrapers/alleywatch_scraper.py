@@ -339,9 +339,24 @@ def parse_monthly_roundup(url: str) -> List[Dict]:
         soup = BeautifulSoup(resp.text, "html.parser")
         content = soup.find("div", class_=re.compile(r"entry-content|post-content")) or soup
 
-        # Extract date from URL
+        # Extract date from URL — use last day of month (more accurate than arbitrary 15th)
         dm = re.search(r"/(\d{4})/(\d{2})/", url)
-        month_str = f"{dm.group(1)}-{dm.group(2)}" if dm else None
+        month_str = None
+        roundup_date = None
+        if dm:
+            year, month = int(dm.group(1)), int(dm.group(2))
+            month_str = f"{dm.group(1)}-{dm.group(2)}"
+            # Compute last day of the month
+            import calendar
+            last_day = calendar.monthrange(year, month)[1]
+            roundup_date = f"{dm.group(1)}-{dm.group(2)}-{last_day:02d}"
+
+        # Try to extract actual publication date from page meta tags
+        time_el = content.find("time", attrs={"datetime": True})
+        if time_el:
+            raw_date = time_el["datetime"][:10]  # "2026-01-28T..." → "2026-01-28"
+            if re.match(r"\d{4}-\d{2}-\d{2}", raw_date):
+                roundup_date = raw_date
 
         # Find deal headers: "## N. CompanyName $XM" or <h2> tags
         headers = content.find_all(["h2", "h3"])
@@ -412,7 +427,8 @@ def parse_monthly_roundup(url: str) -> List[Dict]:
                 "total_raised": total_raised,
                 "sector": sector,
                 "source_url": url,
-                "date_announced": f"{month_str}-15" if month_str else None,
+                "date_announced": roundup_date,
+                "is_roundup": True,
             })
 
         logger.info(f"[AlleyWatch Roundup] Parsed {len(deals)} deals from {url}")
@@ -534,7 +550,12 @@ def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
         raw_parts.append(f"Investors: {', '.join(deal['all_investors'])}")
     raw_text = "\n".join(raw_parts)
 
-    src = "google_news" if deal.get("source_url", "").startswith("https://news.google") else "alleywatch"
+    if deal.get("source_url", "").startswith("https://news.google"):
+        src = "google_news"
+    elif deal.get("is_roundup"):
+        src = "alleywatch_roundup"
+    else:
+        src = "alleywatch"
     sector = deal.get("sector")
     category_id = get_category_id(conn, sector) if sector else None
 

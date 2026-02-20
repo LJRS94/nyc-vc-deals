@@ -405,6 +405,24 @@ def parse_investors(text: str) -> Tuple[List[str], Optional[str]]:
 
 # ── RSS date parsing (shared by news_scraper, alleywatch_scraper) ──
 
+def ensure_full_date(date_str: str) -> Optional[str]:
+    """
+    Ensure a date string is full YYYY-MM-DD format.
+    If only YYYY-MM is provided, appends '-01'.
+    Returns None for invalid/unparseable dates.
+    """
+    if not date_str:
+        return None
+    date_str = date_str.strip()
+    # Already full YYYY-MM-DD
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        return date_str
+    # YYYY-MM only — append day 01
+    if re.match(r"^\d{4}-\d{2}$", date_str):
+        return date_str + "-01"
+    return None
+
+
 def parse_pub_date(date_str: str) -> Optional[str]:
     """Parse RSS pubDate like 'Wed, 12 Feb 2025 08:00:00 GMT' to 'YYYY-MM-DD'."""
     if not date_str:
