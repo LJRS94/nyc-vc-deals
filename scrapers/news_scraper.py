@@ -24,7 +24,7 @@ from fetcher import fetch, NEWS_TTL
 from scrapers.utils import (
     classify_sector as _classify_sector, normalize_stage as _normalize_stage,
     parse_amount as _parse_amount, normalize_company_name, company_names_match,
-    should_skip_deal, validate_deal_amount,
+    should_skip_deal, validate_deal_amount, classify_stage_from_amount,
 )
 from scrapers.llm_extract import (
     extract_deals_batch, validate_company_name, clean_company_name,
@@ -119,6 +119,11 @@ PUBLICATION_FEEDS = [
     ("Technical.ly NYC", "https://technical.ly/new-york/feed/"),
     ("PitchBook News", "https://pitchbook.com/news/feed"),
     ("Business Insider", "https://www.businessinsider.com/sai/rss"),
+    # V.07: new high-value funding deal sources
+    ("VC News Daily", "https://feeds.feedburner.com/vcnewsdaily"),
+    ("SiliconAngle", "https://siliconangle.com/feed/"),
+    ("Forbes Venture Capital", "https://www.forbes.com/venture-capital/feed/"),
+    ("Business Wire Funding", "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeGVtSV0A%3D"),
 ]
 
 
@@ -559,6 +564,9 @@ def process_deal(conn, title: str, url: str, full_text: str,
             amount = llm_result.get("amount")
             if amount and not validate_deal_amount(amount, stage):
                 amount = extract_amount(full_text, title=title)
+            # Amount-based fallback: infer stage from amount when still Unknown
+            if stage == "Unknown" and amount:
+                stage = classify_stage_from_amount(amount)
             description = llm_result.get("description")
             category_name = llm_result.get("sector") or detect_category(combined_text)
 
@@ -656,6 +664,9 @@ def process_deal(conn, title: str, url: str, full_text: str,
     amount = extract_amount(full_text, title=title)
     if not validate_deal_amount(amount, stage):
         amount = None
+    # Amount-based fallback: infer stage from amount when still Unknown
+    if stage == "Unknown" and amount:
+        stage = classify_stage_from_amount(amount)
     category_name = detect_category(combined_text)
     investors = extract_investors(combined_text)
 

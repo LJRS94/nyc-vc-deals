@@ -458,7 +458,10 @@ def get_firms():
 
     sql = """
         SELECT f.*, COUNT(DISTINCT df.deal_id) as deal_count,
-               COALESCE(SUM(d.amount_usd), 0) as total_invested
+               COALESCE(SUM(d.amount_usd), 0) as total_invested,
+               COUNT(DISTINCT CASE WHEN df.role = 'lead' THEN df.deal_id END) as lead_count,
+               (SELECT COUNT(*) FROM investors WHERE firm_id = f.id) as team_count,
+               (SELECT COUNT(*) FROM portfolio_companies WHERE firm_id = f.id) as portfolio_count
         FROM firms f
         LEFT JOIN deal_firms df ON f.id = df.firm_id
         LEFT JOIN deals d ON df.deal_id = d.id
@@ -605,6 +608,130 @@ def get_firm_partners(firm_id):
     return jsonify({
         "firm": dict(firm),
         "partners": partner_data,
+    })
+
+
+@app.route("/api/firms/<int:firm_id>/profile")
+def get_firm_profile(firm_id):
+    """Comprehensive firm profile — one request for the full Firms tab detail view."""
+    conn = get_connection()
+
+    # 1. Firm record
+    firm = conn.execute("SELECT * FROM firms WHERE id = ?", (firm_id,)).fetchone()
+    if not firm:
+        conn.close()
+        return jsonify({"error": "Firm not found"}), 404
+
+    # 2. Deals with category and role
+    deals = conn.execute("""
+        SELECT d.id, d.company_name, d.company_website, d.company_description,
+               d.stage, d.amount_usd, d.date_announced, d.source_type,
+               c.name as category, df.role
+        FROM deals d
+        JOIN deal_firms df ON d.id = df.deal_id
+        LEFT JOIN categories c ON d.category_id = c.id
+        WHERE df.firm_id = ?
+        ORDER BY d.date_announced DESC
+    """, (firm_id,)).fetchall()
+    deals_list = [dict(d) for d in deals]
+
+    # 3. Team members with deal counts
+    team_rows = conn.execute("""
+        SELECT i.id, i.name, i.title, i.linkedin_url,
+               COUNT(DISTINCT di.deal_id) as deal_count
+        FROM investors i
+        LEFT JOIN deal_investors di ON i.id = di.investor_id
+        WHERE i.firm_id = ?
+        GROUP BY i.id
+        ORDER BY deal_count DESC, i.name
+    """, (firm_id,)).fetchall()
+
+    # 4. Per-investor sector breakdown
+    team = []
+    for t in team_rows:
+        sectors = conn.execute("""
+            SELECT c.name, COUNT(*) as count
+            FROM deals d
+            JOIN deal_investors di ON d.id = di.deal_id
+            LEFT JOIN categories c ON d.category_id = c.id
+            WHERE di.investor_id = ?
+            GROUP BY c.name ORDER BY count DESC
+        """, (t["id"],)).fetchall()
+        team.append({
+            "id": t["id"], "name": t["name"], "title": t["title"],
+            "linkedin_url": t["linkedin_url"], "deal_count": t["deal_count"],
+            "sectors": [{"name": s["name"], "count": s["count"]} for s in sectors],
+        })
+
+    # 5. Portfolio companies
+    portfolio = conn.execute("""
+        SELECT id, company_name, company_website, description, sector, lead_partner
+        FROM portfolio_companies WHERE firm_id = ?
+        ORDER BY company_name
+    """, (firm_id,)).fetchall()
+
+    conn.close()
+
+    # Compute KPIs
+    deal_count = len(deals_list)
+    total_invested = sum(d["amount_usd"] or 0 for d in deals_list)
+    lead_count = sum(1 for d in deals_list if d.get("role") == "lead")
+
+    # Sector breakdown
+    sector_map = {}
+    for d in deals_list:
+        cat = d.get("category") or "Other"
+        if cat not in sector_map:
+            sector_map[cat] = {"name": cat, "deal_count": 0, "total_invested": 0}
+        sector_map[cat]["deal_count"] += 1
+        sector_map[cat]["total_invested"] += d.get("amount_usd") or 0
+    sectors = sorted(sector_map.values(), key=lambda x: x["deal_count"], reverse=True)
+
+    # Stage breakdown
+    stage_map = {}
+    for d in deals_list:
+        st = d.get("stage") or "Unknown"
+        stage_map[st] = stage_map.get(st, 0) + 1
+    stage_breakdown = [{"stage": k, "count": v} for k, v in sorted(stage_map.items(), key=lambda x: x[1], reverse=True)]
+
+    # Activity stats
+    now = datetime.now()
+    deals_last_90d = 0
+    deals_last_year = 0
+    latest_deal_date = None
+    for d in deals_list:
+        da = d.get("date_announced")
+        if da:
+            if not latest_deal_date or da > latest_deal_date:
+                latest_deal_date = da
+            try:
+                dt = datetime.strptime(da, "%Y-%m-%d")
+                if (now - dt).days <= 90:
+                    deals_last_90d += 1
+                if (now - dt).days <= 365:
+                    deals_last_year += 1
+            except Exception:
+                pass
+
+    return jsonify({
+        "firm": dict(firm),
+        "kpis": {
+            "deal_count": deal_count,
+            "total_invested": total_invested,
+            "lead_count": lead_count,
+            "team_count": len(team),
+            "portfolio_count": len(portfolio),
+        },
+        "team": team,
+        "portfolio": [dict(p) for p in portfolio],
+        "deals": deals_list,
+        "sectors": sectors,
+        "stage_breakdown": stage_breakdown,
+        "activity": {
+            "deals_last_90d": deals_last_90d,
+            "deals_last_year": deals_last_year,
+            "latest_deal_date": latest_deal_date,
+        },
     })
 
 

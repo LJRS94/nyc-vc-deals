@@ -63,7 +63,8 @@ Rules:
 - is_funding_deal should be false for articles about layoffs, acquisitions, IPOs, market analysis, etc.
 - amount should be a raw number in USD (5000000 not "5M")
 - Only set is_nyc to true if there's clear evidence the company is NYC-based
-- For investors, include both lead and participating investors"""
+- For investors, include both lead and participating investors
+- IMPORTANT for stage: Try hard to determine the stage. Look for keywords like "seed", "Series A/B/C", "pre-seed", "angel", "growth", etc. If no explicit stage keyword exists but the amount is known, infer: <$500K = Pre-Seed, <$3M = Seed, <$20M = Series A, <$80M = Series B, >=$80M = Series C+. Only use "Unknown" as a last resort when neither stage keywords nor amount are available."""
 
 
 def extract_deal_from_text(title: str, text: str) -> Optional[Dict]:
@@ -126,7 +127,8 @@ Rules:
 - Extract EVERY deal mentioned in the report
 - company_name should be JUST the company name
 - amount should be a raw number in USD
-- Include all investors mentioned for each deal"""
+- Include all investors mentioned for each deal
+- IMPORTANT for stage: Try hard to determine the stage. Look for keywords like "seed", "Series A/B/C", "pre-seed", "angel", "growth", etc. If no explicit stage keyword exists but the amount is known, infer: <$500K = Pre-Seed, <$3M = Seed, <$20M = Series A, <$80M = Series B, >=$80M = Series C+. Only use "Unknown" as a last resort."""
 
 
 def extract_deals_batch(articles: List[Dict], max_workers: int = 5) -> Dict[str, Optional[Dict]]:

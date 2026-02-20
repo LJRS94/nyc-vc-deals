@@ -17,11 +17,27 @@ from typing import Optional, List, Tuple
 # ── Stage normalization ───────────────────────────────────────
 
 STAGE_MAP = {
-    "pre-seed": "Pre-Seed", "pre seed": "Pre-Seed", "angel": "Pre-Seed",
-    "friends and family": "Pre-Seed",
-    "seed": "Seed", "seed-stage": "Seed",
+    # Pre-Seed
+    "pre-seed": "Pre-Seed", "pre seed": "Pre-Seed", "preseed": "Pre-Seed",
+    "angel": "Pre-Seed", "angel round": "Pre-Seed",
+    "friends and family": "Pre-Seed", "f&f round": "Pre-Seed",
+    "convertible note": "Pre-Seed", "safe note": "Pre-Seed",
+    "initial funding": "Pre-Seed", "pre-seed round": "Pre-Seed",
+    # Seed
+    "seed": "Seed", "seed-stage": "Seed", "seed round": "Seed",
+    "seed funding": "Seed", "seed extension": "Seed",
+    "venture": "Seed", "early stage": "Seed", "early-stage": "Seed",
+    "bridge round": "Seed", "bridge financing": "Seed",
+    # Series A
     "series a": "Series A", "series-a": "Series A",
+    "round a": "Series A", "a round": "Series A",
+    "series a1": "Series A", "series a2": "Series A",
+    "series a extension": "Series A",
+    # Series B
     "series b": "Series B", "series-b": "Series B",
+    "round b": "Series B", "b round": "Series B",
+    "series b1": "Series B", "series b2": "Series B",
+    "series b extension": "Series B",
     # V.06 fix: C+ rounds are NOT Series B
     "series c": "Series C+", "series-c": "Series C+",
     "series d": "Series C+", "series-d": "Series C+",
@@ -29,12 +45,15 @@ STAGE_MAP = {
     "series f": "Series C+", "series-f": "Series C+",
     "series g": "Series C+", "series-g": "Series C+",
     "series h": "Series C+", "series-h": "Series C+",
-    "venture": "Seed",
-    "growth": "Series C+",
-    "growth equity": "Series C+",
-    "expansion": "Series C+",
-    "late stage": "Series C+",
-    "late-stage": "Series C+",
+    "round c": "Series C+", "round d": "Series C+",
+    "round e": "Series C+", "round f": "Series C+",
+    "c round": "Series C+", "d round": "Series C+",
+    "growth": "Series C+", "growth equity": "Series C+",
+    "growth round": "Series C+", "growth stage": "Series C+",
+    "expansion": "Series C+", "expansion round": "Series C+",
+    "late stage": "Series C+", "late-stage": "Series C+",
+    "strategic round": "Series C+", "strategic investment": "Series C+",
+    "mezzanine": "Series C+", "crossover round": "Series C+",
 }
 
 
