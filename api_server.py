@@ -225,6 +225,35 @@ def api_saved_ids():
     return jsonify({"ids": ids})
 
 
+# ── Notifications ─────────────────────────────────────────────
+
+@app.route("/api/notifications", methods=["GET"])
+@login_required
+def api_get_notifications():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM notifications WHERE user_id = ? OR user_id IS NULL "
+        "ORDER BY created_at DESC LIMIT 50", (session["user_id"],)
+    ).fetchall()
+    unread = conn.execute(
+        "SELECT COUNT(*) FROM notifications WHERE (user_id = ? OR user_id IS NULL) AND read = 0",
+        (session["user_id"],)
+    ).fetchone()[0]
+    return jsonify({"notifications": [dict(r) for r in rows], "unread": unread})
+
+
+@app.route("/api/notifications/read", methods=["POST"])
+@login_required
+def api_mark_notifications_read():
+    conn = get_connection()
+    conn.execute(
+        "UPDATE notifications SET read = 1 WHERE (user_id = ? OR user_id IS NULL) AND read = 0",
+        (session["user_id"],)
+    )
+    conn.commit()
+    return jsonify({"ok": True})
+
+
 # ── Background Scraping ──────────────────────────────────────
 
 _scrape_lock = threading.Lock()
@@ -265,6 +294,82 @@ def _enrich_firm_profiles(conn):
     conn.commit()
     if updated:
         logger.info(f"Enriched {updated} firm profiles from deal patterns")
+
+
+def _generate_notifications(conn):
+    """Generate notifications: follow-on rounds for saved deals, new matches for preferences."""
+    import json
+
+    # 1. Follow-on rounds — notify users when a saved company raises again
+    new_deals_24h = conn.execute("""
+        SELECT d.id, d.company_name, d.company_name_normalized, d.stage, d.amount_usd
+        FROM deals d WHERE d.created_at >= datetime('now', '-24 hours')
+    """).fetchall()
+
+    for deal in new_deals_24h:
+        # Check if any user has a saved deal with the same normalized company name
+        saved_users = conn.execute("""
+            SELECT DISTINCT sd.user_id FROM saved_deals sd
+            JOIN deals d2 ON sd.deal_id = d2.id
+            WHERE d2.company_name_normalized = ? AND d2.id != ?
+        """, (deal["company_name_normalized"], deal["id"])).fetchall()
+        for u in saved_users:
+            existing = conn.execute(
+                "SELECT 1 FROM notifications WHERE user_id = ? AND deal_id = ? AND type = 'follow_on'",
+                (u["user_id"], deal["id"])
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO notifications (user_id, type, title, body, deal_id) VALUES (?,?,?,?,?)",
+                    (u["user_id"], "follow_on",
+                     f"{deal['company_name']} raised {deal['stage']}",
+                     f"A company in your saved list raised a new round" +
+                     (f" — ${deal['amount_usd']/1e6:.0f}M" if deal["amount_usd"] else ""),
+                     deal["id"])
+                )
+
+    # 2. Preference matches — notify users when new deals match their feed preferences
+    users = conn.execute("SELECT DISTINCT user_id FROM user_preferences").fetchall()
+    for u in users:
+        uid = u["user_id"]
+        prefs_rows = conn.execute(
+            "SELECT key, value FROM user_preferences WHERE user_id = ?", (uid,)
+        ).fetchall()
+        prefs = {r["key"]: r["value"] for r in prefs_rows}
+        sectors = json.loads(prefs.get("sectors", "[]"))
+        stages = json.loads(prefs.get("stages", "[]"))
+        if not sectors and not stages:
+            continue
+        for deal in new_deals_24h:
+            cat = conn.execute(
+                "SELECT c.name FROM categories c JOIN deals d ON d.category_id = c.id WHERE d.id = ?",
+                (deal["id"],)
+            ).fetchone()
+            cat_name = cat["name"] if cat else None
+            match = False
+            if sectors and cat_name and cat_name in sectors:
+                match = True
+            if stages and deal["stage"] in stages:
+                match = True
+            if match:
+                existing = conn.execute(
+                    "SELECT 1 FROM notifications WHERE user_id = ? AND deal_id = ? AND type = 'new_match'",
+                    (uid, deal["id"])
+                ).fetchone()
+                if not existing:
+                    conn.execute(
+                        "INSERT INTO notifications (user_id, type, title, body, deal_id) VALUES (?,?,?,?,?)",
+                        (uid, "new_match",
+                         f"New {deal['stage']}: {deal['company_name']}",
+                         f"Matches your feed preferences" + (f" ({cat_name})" if cat_name else ""),
+                         deal["id"])
+                    )
+    conn.commit()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM notifications WHERE created_at >= datetime('now', '-24 hours')"
+    ).fetchone()[0]
+    if count:
+        logger.info(f"Generated {count} notifications")
 
 
 def _run_scrape_background():
@@ -361,6 +466,12 @@ def _run_scrape_background():
             )
         except Exception as e:
             logger.warning(f"QC audit warning: {e}")
+
+        # Generate notifications for follow-on rounds and preference matches
+        try:
+            _generate_notifications(conn)
+        except Exception as e:
+            logger.warning(f"Notification generation warning: {e}")
         finally:
             conn.close()
 

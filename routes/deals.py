@@ -363,6 +363,26 @@ def firms_coinvestors():
     return jsonify([dict(r) for r in rows])
 
 
+@deals_bp.route("/api/deals/sector-trends", methods=["GET"])
+def sector_trends():
+    """Monthly deal count and capital by sector for trend charts."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT
+            strftime('%Y-%m', COALESCE(d.date_announced, d.created_at)) as month,
+            c.name as sector,
+            COUNT(*) as deal_count,
+            COALESCE(SUM(d.amount_usd), 0) as total_capital,
+            COALESCE(AVG(d.amount_usd), 0) as avg_size
+        FROM deals d
+        LEFT JOIN categories c ON d.category_id = c.id
+        WHERE d.date_announced IS NOT NULL
+        GROUP BY month, c.name
+        ORDER BY month, deal_count DESC
+    """).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
 @deals_bp.route("/api/categories", methods=["GET"])
 def get_categories():
     conn = get_connection()

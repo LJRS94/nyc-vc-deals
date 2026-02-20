@@ -275,6 +275,59 @@
       </div>;
     }
 
+    /* ── Co-Investor Network Graph ── */
+    function NetworkGraph({coinvestors, goFirm}) {
+      const svgRef = useRef(null);
+      const [nodes, setNodes] = useState([]);
+      const [edges, setEdges] = useState([]);
+
+      useEffect(() => {
+        if (!coinvestors.length) return;
+        // Build node/edge data from coinvestor pairs
+        const nodeMap = {};
+        const edgeList = [];
+        coinvestors.slice(0, 30).forEach(c => {
+          if (!nodeMap[c.firm_a]) nodeMap[c.firm_a] = {name: c.firm_a, deals: 0, x: 0, y: 0};
+          if (!nodeMap[c.firm_b]) nodeMap[c.firm_b] = {name: c.firm_b, deals: 0, x: 0, y: 0};
+          nodeMap[c.firm_a].deals += c.shared_deals;
+          nodeMap[c.firm_b].deals += c.shared_deals;
+          edgeList.push({source: c.firm_a, target: c.firm_b, weight: c.shared_deals, capital: c.shared_capital});
+        });
+        // Layout: circular with slight randomization
+        const nodeList = Object.values(nodeMap);
+        const cx = 300, cy = 200, r = 160;
+        nodeList.forEach((n, i) => {
+          const angle = (2 * Math.PI * i) / nodeList.length - Math.PI / 2;
+          n.x = cx + r * Math.cos(angle) + (Math.random() - 0.5) * 20;
+          n.y = cy + r * Math.sin(angle) + (Math.random() - 0.5) * 20;
+        });
+        setNodes(nodeList);
+        setEdges(edgeList);
+      }, [coinvestors]);
+
+      if (!nodes.length) return null;
+      const maxDeals = Math.max(...nodes.map(n => n.deals), 1);
+      return <svg ref={svgRef} viewBox="0 0 600 400" style={{width:"100%",maxWidth:700,background:"#0c0d14",borderRadius:8,border:"1px solid #191a2e"}}>
+        {edges.map((e, i) => {
+          const s = nodes.find(n => n.name === e.source);
+          const t = nodes.find(n => n.name === e.target);
+          if (!s || !t) return null;
+          return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+            stroke="#7c3aed" strokeWidth={Math.max(1, e.weight * 0.8)} strokeOpacity={0.3 + e.weight * 0.1} />;
+        })}
+        {nodes.map((n, i) => {
+          const radius = 6 + (n.deals / maxDeals) * 14;
+          return <g key={i} style={{cursor:"pointer"}} onClick={() => goFirm(n.name)}>
+            <circle cx={n.x} cy={n.y} r={radius} fill="#7c3aed" fillOpacity={0.6} stroke="#a78bfa" strokeWidth={1} />
+            <text x={n.x} y={n.y + radius + 12} textAnchor="middle"
+              fill="#888" fontSize={8} fontFamily="'IBM Plex Mono',monospace">
+              {n.name.length > 18 ? n.name.slice(0, 16) + "…" : n.name}
+            </text>
+          </g>;
+        })}
+      </svg>;
+    }
+
     /* ── Main App ── */
     function App() {
       const [deals, setDeals] = useState([]);
@@ -323,6 +376,12 @@
       const [compareData, setCompareData] = useState([]);
       const [selInvestor, setSelInvestor] = useState(null);
       const [investorProfile, setInvestorProfile] = useState(null);
+      const [notifications, setNotifications] = useState([]);
+      const [unreadCount, setUnreadCount] = useState(0);
+      const [showNotifs, setShowNotifs] = useState(false);
+      const [sectorTrends, setSectorTrends] = useState([]);
+      const [qcAudit, setQcAudit] = useState(null);
+      const [qcRejections, setQcRejections] = useState(null);
 
       /* Fetch data from API */
       useEffect(() => {
@@ -349,6 +408,7 @@
             setUser(me);
             fetch("/api/saved/ids").then(r=>r.ok?r.json():null).then(d=>{ if(d) setSavedIds(new Set(d.ids)); });
             fetch("/api/preferences").then(r=>r.ok?r.json():null).then(d=>{ if(d) setPrefs(d); });
+            fetch("/api/notifications").then(r=>r.ok?r.json():null).then(d=>{ if(d) { setNotifications(d.notifications||[]); setUnreadCount(d.unread||0); }});
           }
           setLoading(false);
         }).catch(e => {
@@ -374,11 +434,17 @@
             fetch("/api/firms/coinvestors").then(r=>r.json()),
             fetch("/api/deals/followons").then(r=>r.json()),
             fetch("/api/deals/completeness").then(r=>r.json()),
-          ]).then(([vel, coinv, foll, comp]) => {
+            fetch("/api/deals/sector-trends").then(r=>r.json()),
+            fetch("/api/qc/audit").then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch("/api/qc/rejections").then(r=>r.ok?r.json():null).catch(()=>null),
+          ]).then(([vel, coinv, foll, comp, trends, audit, rejections]) => {
             setVelocity(vel || null);
             setCoinvestors(coinv || []);
             setFollowons(foll || []);
             setCompleteness(comp || null);
+            setSectorTrends(trends || []);
+            setQcAudit(audit || null);
+            setQcRejections(rejections || null);
             setInsightsLoaded(true);
           });
         }
@@ -591,7 +657,7 @@
               {qBuf && <button onClick={()=>{setQBuf("");setQ("");}} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",color:"#555",fontSize:12}}>✕</button>}
             </div>
             <div style={{display:"flex",gap:1,background:"#141520",borderRadius:5,padding:2}}>
-              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"insights",l:"◉ Insights"},{id:"portfolio",l:"◈ Portfolio"},
+              {[{id:"grid",l:"⊞ Deals"},{id:"firms",l:"◆ Firms"},{id:"partners",l:"⊕ Partners"},{id:"categories",l:"◧ Sectors"},{id:"insights",l:"◉ Insights"},{id:"portfolio",l:"◈ Portfolio"},{id:"qc",l:"⊘ Quality"},
                 ...(user ? [{id:"saved",l:"★ Saved"}] : [])
               ].map(t=>
                 <button key={t.id} onClick={()=>{setView(t.id);if(t.id!=="firms"){setSelFirm(null);setFirmProfile(null);}setSelCat(null);if(t.id!=="portfolio")setSelPortFirm(null);if(t.id==="saved")setSelFolder(null);}}
@@ -608,6 +674,23 @@
             {/* Auth UI */}
             {user ? (
               <div className="user-menu">
+                <div style={{position:"relative",cursor:"pointer",marginRight:4}} onClick={e=>{e.stopPropagation();setShowNotifs(!showNotifs);}}>
+                  <span style={{fontSize:16,color:unreadCount?"#f59e0b":"#555"}}>🔔</span>
+                  {unreadCount > 0 && <span style={{position:"absolute",top:-4,right:-6,background:"#ef4444",color:"#fff",fontSize:8,fontWeight:700,borderRadius:6,padding:"1px 4px",minWidth:14,textAlign:"center"}}>{unreadCount}</span>}
+                </div>
+                {showNotifs && <div className="user-dropdown" style={{right:40,maxHeight:300,overflow:"auto",minWidth:280}}>
+                  <div style={{padding:"8px 14px",borderBottom:"1px solid #1e1f35",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:"#bbb"}}>Notifications</span>
+                    {unreadCount > 0 && <button onClick={()=>{fetch("/api/notifications/read",{method:"POST"});setUnreadCount(0);setNotifications(prev=>prev.map(n=>({...n,read:1})));}}
+                      style={{fontSize:9,color:"#a78bfa",background:"none",border:"none",cursor:"pointer"}}>Mark all read</button>}
+                  </div>
+                  {notifications.length === 0 ? <div style={{padding:"16px 14px",fontSize:11,color:"#555",textAlign:"center"}}>No notifications yet</div>
+                  : notifications.slice(0,20).map(n => <div key={n.id} style={{padding:"8px 14px",borderBottom:"1px solid #13141f",background:n.read?"transparent":"#7c3aed08"}}>
+                    <div style={{fontSize:11,fontWeight:600,color:n.read?"#888":"#ddd"}}>{n.title}</div>
+                    <div style={{fontSize:10,color:"#555",marginTop:2}}>{n.body}</div>
+                    <div style={{fontSize:9,color:"#333",marginTop:2}}>{(n.created_at||"").slice(0,16)}</div>
+                  </div>)}
+                </div>}
                 <div className="user-initial"
                   onClick={(e)=>{e.stopPropagation();setShowDropdown(!showDropdown);}}>
                   {(user.name||"U")[0].toUpperCase()}
@@ -1122,6 +1205,48 @@
                 </div>
               </div>}
 
+              {/* Sector Trends */}
+              {sectorTrends.length > 0 && (() => {
+                // Aggregate by month+sector, pick top 5 sectors
+                const sectorTotals = {};
+                sectorTrends.forEach(r => {
+                  const s = r.sector || "Other";
+                  sectorTotals[s] = (sectorTotals[s] || 0) + r.deal_count;
+                });
+                const topSectors = Object.entries(sectorTotals).sort((a,b) => b[1] - a[1]).slice(0, 5).map(e => e[0]);
+                const months = [...new Set(sectorTrends.map(r => r.month))].sort().slice(-12);
+                const seriesData = {};
+                topSectors.forEach(s => { seriesData[s] = {}; months.forEach(m => { seriesData[s][m] = 0; }); });
+                sectorTrends.forEach(r => {
+                  if (topSectors.includes(r.sector) && months.includes(r.month)) {
+                    seriesData[r.sector][r.month] = r.deal_count;
+                  }
+                });
+                const maxVal = Math.max(...topSectors.flatMap(s => months.map(m => seriesData[s][m])), 1);
+                const sColors = topSectors.map(s => CC[s] || "#888");
+                const chartH = 120, chartW = months.length * 50;
+                return <div style={{marginBottom:24}}>
+                  <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Sector Trends (top 5, last 12 months)</div>
+                  <div className="chart-container" style={{overflowX:"auto"}}>
+                    <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+                      {topSectors.map((s,i) => <span key={s} style={{fontSize:10,color:sColors[i],fontWeight:600}}>● {s.split("/")[0].trim()}</span>)}
+                    </div>
+                    <svg viewBox={`0 0 ${chartW} ${chartH + 30}`} style={{width:chartW,height:chartH+30,minWidth:"100%"}}>
+                      {topSectors.map((sector, si) => {
+                        const points = months.map((m, mi) => {
+                          const x = mi * 50 + 25;
+                          const y = chartH - (seriesData[sector][m] / maxVal * chartH);
+                          return `${x},${y}`;
+                        }).join(" ");
+                        return <polyline key={sector} points={points} fill="none" stroke={sColors[si]} strokeWidth={2} strokeOpacity={0.8} />;
+                      })}
+                      {months.map((m, mi) => <text key={m} x={mi * 50 + 25} y={chartH + 18} textAnchor="middle"
+                        fill="#444" fontSize={8} fontFamily="'IBM Plex Mono',monospace">{m.slice(2)}</text>)}
+                    </svg>
+                  </div>
+                </div>;
+              })()}
+
               {/* Data Completeness */}
               {completeness && completeness.total > 0 && <div style={{marginBottom:24}}>
                 <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Data Completeness ({completeness.total} deals)</div>
@@ -1138,6 +1263,12 @@
               </div>}
 
               {/* Co-Investor Matrix */}
+              {/* Co-Investor Network Graph */}
+              {coinvestors.length > 0 && <div style={{marginBottom:24}}>
+                <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Co-Investor Network</div>
+                <NetworkGraph coinvestors={coinvestors} goFirm={goFirm} />
+              </div>}
+
               {coinvestors.length > 0 && <div style={{marginBottom:24}}>
                 <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Top Co-Investor Pairs</div>
                 <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
@@ -1289,6 +1420,84 @@
                   </React.Fragment>;
                 })()}
               </div>
+            </div>}
+
+            {/* ── DATA QUALITY ── */}
+            {view==="qc" && <div style={{flex:1,overflow:"auto",padding:20}} className="fu">
+              {qcAudit ? <div>
+                <div style={{display:"flex",gap:14,marginBottom:20,flexWrap:"wrap"}}>
+                  <div className="kpi"><div className="kpi-label">Health Score</div>
+                    <div className="kpi-val mono" style={{color:qcAudit.health_score>=0.9?"#34d399":qcAudit.health_score>=0.7?"#f59e0b":"#ef4444"}}>
+                      {(qcAudit.health_score*100).toFixed(0)}%
+                    </div></div>
+                  <div className="kpi"><div className="kpi-label">Total Deals</div><div className="kpi-val mono" style={{color:"#eee"}}>{qcAudit.total_deals}</div></div>
+                  <div className="kpi"><div className="kpi-label">Issues Found</div><div className="kpi-val mono" style={{color:qcAudit.total_issues>0?"#f59e0b":"#34d399"}}>{qcAudit.total_issues}</div></div>
+                </div>
+
+                {qcAudit.issues && qcAudit.issues.length > 0 && <div style={{marginBottom:20}}>
+                  <div className="kpi-label" style={{marginBottom:8,fontSize:11}}>Issues by Type</div>
+                  {(() => {
+                    const byType = {};
+                    qcAudit.issues.forEach(iss => { byType[iss.type] = (byType[iss.type]||0) + 1; });
+                    return <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {Object.entries(byType).sort((a,b)=>b[1]-a[1]).map(([type, count]) =>
+                        <div key={type} style={{background:"#101118",border:"1px solid #191a2e",borderRadius:5,padding:"8px 14px"}}>
+                          <div style={{fontSize:11,fontWeight:600,color:"#ddd"}}>{type.replace(/_/g," ")}</div>
+                          <div className="mono" style={{fontSize:16,fontWeight:700,color:"#f59e0b",marginTop:2}}>{count}</div>
+                        </div>
+                      )}
+                    </div>;
+                  })()}
+                </div>}
+
+                {qcAudit.issues && qcAudit.issues.length > 0 && <div style={{marginBottom:20}}>
+                  <div className="kpi-label" style={{marginBottom:8,fontSize:11}}>Recent Issues</div>
+                  <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+                    <th style={{cursor:"default"}}>Type</th>
+                    <th style={{cursor:"default"}}>Company</th>
+                    <th style={{cursor:"default"}}>Detail</th>
+                  </tr></thead><tbody>
+                    {qcAudit.issues.slice(0, 30).map((iss, i) =>
+                      <tr key={i} className={i%2?"":"stripe"}>
+                        <td><Badge t={iss.type.replace(/_/g," ")} c="#f59e0b" /></td>
+                        <td style={{fontWeight:600,color:"#ddd"}}>{iss.company_name||"—"}</td>
+                        <td style={{color:"#777",fontSize:11}}>{iss.detail||"—"}</td>
+                      </tr>
+                    )}
+                  </tbody></table>
+                </div>}
+              </div> : <div className="empty" style={{padding:60}}><div>{insightsLoaded ? "No QC data available" : "Loading quality data..."}</div></div>}
+
+              {qcRejections && <div style={{marginTop:20}}>
+                <div className="kpi-label" style={{marginBottom:8,fontSize:11}}>Top Rejection Patterns</div>
+                {qcRejections.top_patterns && qcRejections.top_patterns.length > 0 ? <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+                  <th style={{cursor:"default"}}>Pattern</th>
+                  <th style={{cursor:"default"}}>Type</th>
+                  <th style={{cursor:"default",textAlign:"right"}}>Hits</th>
+                  <th style={{cursor:"default"}}>Auto-Reject</th>
+                </tr></thead><tbody>
+                  {qcRejections.top_patterns.map((p, i) =>
+                    <tr key={i} className={i%2?"":"stripe"}>
+                      <td style={{fontWeight:500,color:"#ddd",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.pattern_value}</td>
+                      <td style={{color:"#777"}}>{p.pattern_type}</td>
+                      <td className="mono" style={{textAlign:"right",color:"#ddd"}}>{p.hit_count}</td>
+                      <td>{p.auto_reject ? <Badge t="Auto" c="#ef4444" /> : <Badge t="Manual" c="#555" />}</td>
+                    </tr>
+                  )}
+                </tbody></table> : <div className="muted" style={{padding:20,textAlign:"center",fontSize:12}}>No rejection patterns recorded</div>}
+              </div>}
+
+              {qcRejections && qcRejections.rejection_summary && <div style={{marginTop:20}}>
+                <div className="kpi-label" style={{marginBottom:8,fontSize:11}}>Rejection Summary (last 30 days)</div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {Object.entries(qcRejections.rejection_summary).map(([reason, count]) =>
+                    <div key={reason} style={{background:"#101118",border:"1px solid #191a2e",borderRadius:5,padding:"6px 12px"}}>
+                      <div style={{fontSize:10,color:"#888"}}>{reason.replace(/_/g," ")}</div>
+                      <div className="mono" style={{fontSize:14,fontWeight:700,color:"#ef4444"}}>{count}</div>
+                    </div>
+                  )}
+                </div>
+              </div>}
             </div>}
           </div>
 

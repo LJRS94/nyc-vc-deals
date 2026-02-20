@@ -244,6 +244,23 @@ def init_db(db_path: str = DB_PATH):
     );
     CREATE INDEX IF NOT EXISTS idx_saved_deals_user ON saved_deals(user_id);
 
+    -- Notifications
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,           -- NULL = broadcast to all
+        type TEXT NOT NULL,        -- 'follow_on', 'new_match', 'milestone'
+        title TEXT NOT NULL,
+        body TEXT,
+        deal_id INTEGER,
+        firm_id INTEGER,
+        read INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (deal_id) REFERENCES deals(id),
+        FOREIGN KEY (firm_id) REFERENCES firms(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
+
     -- Seed default categories
     INSERT OR IGNORE INTO categories (name) VALUES
         ('Fintech'),
