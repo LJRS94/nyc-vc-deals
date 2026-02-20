@@ -7,9 +7,7 @@ when ANTHROPIC_API_KEY is not set.
 import os
 import re
 import json
-import time
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List, Dict
 
@@ -20,29 +18,6 @@ _client_checked = False
 
 from config import LLM_MODEL, LLM_MAX_TEXT_LENGTH
 MODEL = LLM_MODEL
-
-# Rate limiter: 4 requests per minute (with buffer under 5 RPM limit)
-_rate_lock = threading.Lock()
-_request_times: list = []
-_RPM_LIMIT = 4
-
-
-def _wait_for_rate_limit():
-    """Block until we're under the RPM limit."""
-    with _rate_lock:
-        now = time.time()
-        # Remove timestamps older than 60 seconds
-        _request_times[:] = [t for t in _request_times if now - t < 60]
-        if len(_request_times) >= _RPM_LIMIT:
-            wait = 60 - (now - _request_times[0]) + 0.5
-            if wait > 0:
-                logger.debug("Rate limit: waiting %.1fs", wait)
-                _rate_lock.release()
-                time.sleep(wait)
-                _rate_lock.acquire()
-                now = time.time()
-                _request_times[:] = [t for t in _request_times if now - t < 60]
-        _request_times.append(time.time())
 
 
 def _get_client():
@@ -97,7 +72,7 @@ def extract_deal_from_text(title: str, text: str) -> Optional[Dict]:
     """
     Send article to Claude Haiku and return structured JSON.
     Returns None if API key not set or extraction fails.
-    Respects rate limits and retries on 429 errors.
+    On 429 rate limits, returns None immediately (regex fallback handles it).
     """
     client = _get_client()
     if not client:
@@ -107,43 +82,35 @@ def extract_deal_from_text(title: str, text: str) -> Optional[Dict]:
     truncated = text[:LLM_MAX_TEXT_LENGTH] if len(text) > LLM_MAX_TEXT_LENGTH else text
     user_msg = f"Title: {title}\n\nArticle text:\n{truncated}"
 
-    for attempt in range(3):
-        _wait_for_rate_limit()
-        try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=500,
-                messages=[
-                    {"role": "user", "content": user_msg}
-                ],
-                system=EXTRACTION_PROMPT,
-            )
-            raw = response.content[0].text.strip()
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=500,
+            messages=[
+                {"role": "user", "content": user_msg}
+            ],
+            system=EXTRACTION_PROMPT,
+        )
+        raw = response.content[0].text.strip()
 
-            # Strip markdown code fences if present
-            if raw.startswith("```"):
-                raw = re.sub(r"^```(?:json)?\s*", "", raw)
-                raw = re.sub(r"\s*```$", "", raw)
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
 
-            result = json.loads(raw)
-            return result
+        result = json.loads(raw)
+        return result
 
-        except json.JSONDecodeError as e:
-            logger.debug("LLM returned invalid JSON for '%s': %s", title[:60], e)
-            return None
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "rate_limit" in err_str:
-                wait = 15 * (attempt + 1)
-                logger.debug("Rate limited on '%s', waiting %ds (attempt %d/3)",
-                             title[:40], wait, attempt + 1)
-                time.sleep(wait)
-                continue
+    except json.JSONDecodeError as e:
+        logger.debug("LLM returned invalid JSON for '%s': %s", title[:60], e)
+        return None
+    except Exception as e:
+        # 429s fail fast — regex fallback handles these articles
+        if "429" in str(e) or "rate_limit" in str(e):
+            logger.debug("LLM rate limited for '%s', falling back to regex", title[:40])
+        else:
             logger.warning("LLM extraction failed for '%s': %s", title[:60], e)
-            return None
-
-    logger.warning("LLM extraction gave up after 3 rate-limit retries for '%s'", title[:60])
-    return None
+        return None
 
 
 BATCH_PROMPT = """\
@@ -170,28 +137,35 @@ Rules:
 - IMPORTANT for stage: Try hard to determine the stage. Look for keywords like "seed", "Series A/B/C", "pre-seed", "angel", "growth", etc. If no explicit stage keyword exists but the amount is known, infer: <$500K = Pre-Seed, <$3M = Seed, <$20M = Series A, <$80M = Series B, >=$80M = Series C+. Only use "Unknown" as a last resort."""
 
 
-def extract_deals_batch(articles: List[Dict], max_workers: int = 1) -> Dict[str, Optional[Dict]]:
+def extract_deals_batch(articles: List[Dict], max_workers: int = 5) -> Dict[str, Optional[Dict]]:
     """
-    Extract deals from multiple articles sequentially (respects RPM limits).
+    Extract deals from multiple articles in parallel.
     articles: list of dicts with 'title' and 'text' keys.
     Returns: dict mapping title -> extraction result (or None).
+    429 rate limits fail fast and fall back to regex extraction.
     """
     client = _get_client()
     if not client:
         return {}
 
     results = {}
-    for i, article in enumerate(articles):
+
+    def _extract(article):
         title = article.get("title", "")
         text = article.get("text", "")
-        try:
-            result = extract_deal_from_text(title, text)
-            results[title] = result
-        except Exception as e:
-            logger.debug("Batch extraction failed for '%s': %s", title[:60], e)
-            results[title] = None
-        if (i + 1) % 50 == 0:
-            logger.info("LLM batch progress: %d/%d articles", i + 1, len(articles))
+        return title, extract_deal_from_text(title, text)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_extract, a): a for a in articles}
+        for future in as_completed(futures):
+            try:
+                title, result = future.result()
+                results[title] = result
+            except Exception as e:
+                article = futures[future]
+                logger.debug("Batch extraction failed for '%s': %s",
+                             article.get("title", "")[:60], e)
+                results[article.get("title", "")] = None
 
     logger.info("LLM batch extraction: %d/%d succeeded",
                 sum(1 for v in results.values() if v), len(articles))
@@ -209,7 +183,6 @@ def extract_alleywatch_deals(page_text: str) -> Optional[List[Dict]]:
 
     truncated = page_text[:12000] if len(page_text) > 12000 else page_text
 
-    _wait_for_rate_limit()
     try:
         response = client.messages.create(
             model=MODEL,
@@ -234,7 +207,10 @@ def extract_alleywatch_deals(page_text: str) -> Optional[List[Dict]]:
         logger.debug("LLM returned invalid JSON for AlleyWatch page: %s", e)
         return None
     except Exception as e:
-        logger.warning("LLM AlleyWatch extraction failed: %s", e)
+        if "429" in str(e) or "rate_limit" in str(e):
+            logger.debug("LLM rate limited for AlleyWatch page, falling back to regex")
+        else:
+            logger.warning("LLM AlleyWatch extraction failed: %s", e)
         return None
 
 
