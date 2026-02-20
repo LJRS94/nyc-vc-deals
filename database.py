@@ -157,6 +157,7 @@ def init_db(db_path: str = DB_PATH):
         FOREIGN KEY (firm_id) REFERENCES firms(id)
     );
     CREATE INDEX IF NOT EXISTS idx_deal_firms_firm ON deal_firms(firm_id);
+    CREATE INDEX IF NOT EXISTS idx_deal_firms_deal ON deal_firms(deal_id);
 
     -- Many-to-many: deals <-> investors
     CREATE TABLE IF NOT EXISTS deal_investors (
@@ -167,6 +168,7 @@ def init_db(db_path: str = DB_PATH):
         FOREIGN KEY (investor_id) REFERENCES investors(id)
     );
     CREATE INDEX IF NOT EXISTS idx_deal_investors_investor ON deal_investors(investor_id);
+    CREATE INDEX IF NOT EXISTS idx_deal_investors_deal ON deal_investors(deal_id);
 
     -- Deal metadata (key-value pairs for extensible deal attributes)
     CREATE TABLE IF NOT EXISTS deal_metadata (
@@ -200,11 +202,13 @@ def init_db(db_path: str = DB_PATH):
         lead_partner TEXT,
         sector TEXT,
         source_url TEXT,
+        company_name_normalized TEXT,
         scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (firm_id) REFERENCES firms(id),
         UNIQUE(firm_id, company_name)
     );
     CREATE INDEX IF NOT EXISTS idx_portfolio_firm ON portfolio_companies(firm_id);
+    CREATE INDEX IF NOT EXISTS idx_portfolio_normalized ON portfolio_companies(company_name_normalized);
 
     -- Users (username/password)
     CREATE TABLE IF NOT EXISTS users (

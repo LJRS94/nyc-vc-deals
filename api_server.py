@@ -74,6 +74,16 @@ def login_required(f):
     return wrapper
 
 
+@app.route("/health")
+def health_check():
+    try:
+        conn = get_connection()
+        count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+        return jsonify({"status": "ok", "deals": count})
+    except Exception as e:
+        return jsonify({"status": "error", "detail": str(e)}), 500
+
+
 @app.route("/")
 def serve_dashboard():
     return send_from_directory(os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"), "dashboard.html")
@@ -223,6 +233,40 @@ _scrape_status = {"running": False, "last_run": None, "last_result": None}
 logger = logging.getLogger("api_server")
 
 
+def _enrich_firm_profiles(conn):
+    """Auto-populate firm focus_sectors and focus_stages from their deal history."""
+    import json
+    rows = conn.execute("""
+        SELECT f.id,
+               GROUP_CONCAT(DISTINCT c.name) as sectors,
+               GROUP_CONCAT(DISTINCT d.stage) as stages,
+               COUNT(DISTINCT d.id) as deal_count,
+               COALESCE(SUM(d.amount_usd), 0) as total_capital
+        FROM firms f
+        JOIN deal_firms df ON f.id = df.firm_id
+        JOIN deals d ON df.deal_id = d.id
+        LEFT JOIN categories c ON d.category_id = c.id
+        GROUP BY f.id
+        HAVING deal_count >= 1
+    """).fetchall()
+    updated = 0
+    for r in rows:
+        sectors = [s for s in (r["sectors"] or "").split(",") if s]
+        stages = [s for s in (r["stages"] or "").split(",") if s]
+        if sectors or stages:
+            conn.execute("""
+                UPDATE firms SET
+                    focus_sectors = COALESCE(focus_sectors, ?),
+                    focus_stages = COALESCE(focus_stages, ?),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND (focus_sectors IS NULL OR focus_stages IS NULL)
+            """, (json.dumps(sectors), json.dumps(stages), r["id"]))
+            updated += 1
+    conn.commit()
+    if updated:
+        logger.info(f"Enriched {updated} firm profiles from deal patterns")
+
+
 def _run_scrape_background():
     """Run a scrape in a background thread."""
     if not _scrape_lock.acquire(blocking=False):
@@ -234,6 +278,7 @@ def _run_scrape_background():
 
         from scrapers.news_scraper import run_news_scraper
         from scrapers.alleywatch_scraper import run_alleywatch_scraper
+        from scrapers.sec_scraper import run_sec_scraper
         from scrapers.firm_scraper import seed_firms
         from scrapers.utils import clear_firm_cache
 
@@ -280,6 +325,12 @@ def _run_scrape_background():
         run_news_scraper(days_back=180)
         run_alleywatch_scraper(days_back=180)
 
+        # SEC EDGAR Form D filings (free public data)
+        try:
+            run_sec_scraper(days_back=180)
+        except Exception as e:
+            logger.warning(f"SEC scraper warning: {e}")
+
         # Post-scrape: cross-source dedup + QC audit
         conn = get_connection()
 
@@ -291,6 +342,12 @@ def _run_scrape_background():
             logger.warning(f"Cross-source dedup warning: {e}")
 
         deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+
+        # Enrich firm profiles from deal patterns
+        try:
+            _enrich_firm_profiles(conn)
+        except Exception as e:
+            logger.warning(f"Firm enrichment warning: {e}")
 
         try:
             # Auto-promote frequently-rejected patterns to auto-reject

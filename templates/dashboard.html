@@ -70,6 +70,23 @@
     .chart-fill { height: 100%; border-radius: 2px; }
     .investor-card { background: #101118; border: 1px solid #191a2e; border-radius: 5px; padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: border-color .12s; }
     .investor-card:hover { border-color: #7c3aed30; }
+    /* Mobile responsiveness */
+    @media (max-width: 768px) {
+      .header { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+      .header > div:nth-child(2) { order: 5; width: 100%; max-width: 100% !important; }
+      .filters { overflow-x: auto; flex-wrap: nowrap; padding: 6px 12px; }
+      .sidebar-fixed { width: 100% !important; max-height: 200px; border-right: none !important; border-bottom: 1px solid #191a2e; }
+      .expand-row td > div { grid-template-columns: 1fr !important; }
+      .modal { min-width: auto !important; max-width: 95vw !important; margin: 10px; }
+      table { font-size: 11px !important; }
+      td, th { padding: 6px 6px !important; }
+    }
+    .chart-container { background: #101118; border: 1px solid #191a2e; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+    .export-btn { padding: 4px 12px; border-radius: 4px; font-size: 10.5px; font-weight: 600; border: 1px solid #7c3aed40; background: #7c3aed14; color: #a78bfa; cursor: pointer; }
+    .export-btn:hover { background: #7c3aed28; }
+    .compare-card { background: #101118; border: 1px solid #191a2e; border-radius: 6px; padding: 16px; flex: 1; min-width: 280px; }
+    .source-bar { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+    .source-fill { height: 6px; border-radius: 3px; }
   </style>
 </head>
 <body>
@@ -300,6 +317,12 @@
       const [showDropdown, setShowDropdown] = useState(false);
       const [showLogin, setShowLogin] = useState(false);
       const [myFeedOn, setMyFeedOn] = useState(false);
+      const [timeline, setTimeline] = useState([]);
+      const [sourceBreakdown, setSourceBreakdown] = useState([]);
+      const [compareFirms, setCompareFirms] = useState([]);  // firm IDs for comparison
+      const [compareData, setCompareData] = useState([]);
+      const [selInvestor, setSelInvestor] = useState(null);
+      const [investorProfile, setInvestorProfile] = useState(null);
 
       /* Fetch data from API */
       useEffect(() => {
@@ -311,13 +334,17 @@
           fetch("/api/portfolio").then(r=>r.json()),
           fetch("/api/me").then(r=>r.json()),
           fetch("/api/portfolio/linked").then(r=>r.json()),
-        ]).then(([feed, st, fi, inv, port, me, linked]) => {
+          fetch("/api/feed/timeline").then(r=>r.json()),
+          fetch("/api/deals/by-source").then(r=>r.json()),
+        ]).then(([feed, st, fi, inv, port, me, linked, tl, src]) => {
           setDeals(feed.deals || []);
           setStats(st);
           setFirms(fi || []);
           setInvestors(inv || []);
           setPortfolio(port || {companies:[], firms:[], total:0});
           setLinkedPortfolio(linked || []);
+          setTimeline(tl || []);
+          setSourceBreakdown(src || []);
           if (me.logged_in) {
             setUser(me);
             fetch("/api/saved/ids").then(r=>r.ok?r.json():null).then(d=>{ if(d) setSavedIds(new Set(d.ids)); });
@@ -406,6 +433,15 @@
           .catch(() => setFirmProfileLoading(false));
       }, [selFirm]);
 
+      /* Fetch investor profile when selected */
+      useEffect(() => {
+        if (!selInvestor) { setInvestorProfile(null); return; }
+        fetch(`/api/investors/${selInvestor}`)
+          .then(r => r.json())
+          .then(data => setInvestorProfile(data))
+          .catch(() => setInvestorProfile(null));
+      }, [selInvestor]);
+
       /* / key focuses search */
       useEffect(() => {
         const h = e => { if (e.key === "/" && document.activeElement?.tagName !== "INPUT") { e.preventDefault(); inpRef.current?.focus(); }};
@@ -414,6 +450,44 @@
       }, []);
 
       const doSort = useCallback(f => setSort(p => ({f, d: p.f===f && p.d==="desc" ? "asc" : "desc"})), []);
+
+      const exportCSV = useCallback(() => {
+        const headers = ["Company","Amount","Stage","Sector","Date","Lead Investor","Source","Confidence"];
+        const csvRows = [headers.join(",")];
+        rows.forEach(d => {
+          csvRows.push([
+            `"${(d.company_name||"").replace(/"/g,'""')}"`,
+            d.amount_usd||"",
+            d.stage||"",
+            `"${(d.category||"").replace(/"/g,'""')}"`,
+            d.date_announced||"",
+            `"${((d.lead_firms||[])[0]||"").replace(/"/g,'""')}"`,
+            d.source_type||"",
+            d.confidence_score||"",
+          ].join(","));
+        });
+        const blob = new Blob([csvRows.join("\n")], {type:"text/csv"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `nyc_vc_deals_${new Date().toISOString().slice(0,10)}.csv`;
+        a.click(); URL.revokeObjectURL(url);
+      }, [rows]);
+
+      /* Add firm to comparison */
+      const toggleCompare = useCallback((firmId) => {
+        setCompareFirms(prev => {
+          if (prev.includes(firmId)) return prev.filter(id => id !== firmId);
+          if (prev.length >= 3) return prev; // max 3
+          return [...prev, firmId];
+        });
+      }, []);
+
+      /* Fetch comparison data */
+      useEffect(() => {
+        if (compareFirms.length < 2) { setCompareData([]); return; }
+        Promise.all(compareFirms.map(id => fetch(`/api/firms/${id}/profile`).then(r=>r.json())))
+          .then(data => setCompareData(data));
+      }, [compareFirms]);
 
       /* Derived data */
       const allStages = useMemo(() => [...new Set(deals.map(d=>d.stage))].filter(Boolean).sort(), [deals]);
@@ -529,6 +603,7 @@
                 <div style={{fontSize:16,fontWeight:700,color:"#eee"}}>{rows.length}<span style={{fontSize:11,color:"#555"}}>/{deals.length}</span></div></div>
               <div style={{textAlign:"right"}}><div style={{fontSize:9,color:"#444",fontWeight:600,letterSpacing:1,textTransform:"uppercase"}}>Capital</div>
                 <div style={{fontSize:16,fontWeight:700}} className="green">{$(totCap)}</div></div>
+              <button onClick={exportCSV} className="export-btn" title="Export filtered deals to CSV">⬇ CSV</button>
             </div>
             {/* Auth UI */}
             {user ? (
@@ -662,8 +737,12 @@
                       const sectors = f.focus_sectors ? (() => { try { return JSON.parse(f.focus_sectors); } catch(e) { return []; }})() : [];
                       return <tr key={f.id} onClick={()=>setSelFirm(selFirm===f.id?null:f.id)}
                         className={i%2===0?"stripe":""} style={{cursor:"pointer",background:selFirm===f.id?"#181930":undefined}}>
-                        <td><div style={{fontWeight:600,color:selFirm===f.id?"#c4b5fd":"#ddd"}}>{f.name}</div>
-                          <div style={{display:"flex",gap:2,marginTop:3,flexWrap:"wrap"}}>{sectors.slice(0,3).map(c=><Badge key={c} t={c.split("/")[0].trim()} c={CC[c]||"#666"} />)}</div></td>
+                        <td><div style={{display:"flex",alignItems:"center",gap:6}}>
+                          <input type="checkbox" checked={compareFirms.includes(f.id)} onChange={e=>{e.stopPropagation();toggleCompare(f.id);}}
+                            style={{accentColor:"#7c3aed",cursor:"pointer"}} title="Compare" />
+                          <div style={{fontWeight:600,color:selFirm===f.id?"#c4b5fd":"#ddd"}}>{f.name}</div>
+                        </div>
+                          <div style={{display:"flex",gap:2,marginTop:3,flexWrap:"wrap",marginLeft:22}}>{sectors.slice(0,3).map(c=><Badge key={c} t={c.split("/")[0].trim()} c={CC[c]||"#666"} />)}</div></td>
                         <td className="mono" style={{textAlign:"right",fontWeight:700,color:"#ddd"}}>{f.deal_count||0}</td>
                         <td className="mono green" style={{textAlign:"right",fontWeight:700}}>{$(f.total_invested)}</td>
                         <td className="mono purple" style={{textAlign:"right"}}>{f.lead_count||0}</td>
@@ -675,6 +754,27 @@
 
               {/* Right panel — firm profile */}
               <div style={{flex:1,overflow:"auto",padding:20}}>
+                {compareFirms.length >= 2 && compareData.length >= 2 && <div style={{marginBottom:24}} className="fu">
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div className="kpi-label" style={{fontSize:11}}>Firm Comparison</div>
+                    <button onClick={()=>{setCompareFirms([]);setCompareData([]);}} style={{color:"#555",fontSize:10}}>✕ Clear</button>
+                  </div>
+                  <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+                    {compareData.map(cd => <div key={cd.firm.id} className="compare-card">
+                      <div style={{fontSize:14,fontWeight:700,color:"#eee",marginBottom:8}}>{cd.firm.name}</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 16px",fontSize:11.5}}>
+                        <span className="muted">Deals</span><span className="mono" style={{color:"#eee",fontWeight:700}}>{cd.kpis.deal_count}</span>
+                        <span className="muted">Capital</span><span className="mono green">{$(cd.kpis.total_invested)}</span>
+                        <span className="muted">Lead Rounds</span><span className="mono purple">{cd.kpis.lead_count}</span>
+                        <span className="muted">Team</span><span className="mono" style={{color:"#60a5fa"}}>{cd.kpis.team_count}</span>
+                        <span className="muted">Portfolio</span><span className="mono" style={{color:"#f59e0b"}}>{cd.kpis.portfolio_count}</span>
+                      </div>
+                      {cd.sectors.length > 0 && <div style={{marginTop:8,display:"flex",gap:3,flexWrap:"wrap"}}>
+                        {cd.sectors.slice(0,4).map(s => <Badge key={s.name} t={s.name.split("/")[0].trim()} c={CC[s.name]||"#666"} />)}
+                      </div>}
+                    </div>)}
+                  </div>
+                </div>}
                 {firmProfileLoading ? (
                   <div className="empty"><div style={{color:"#52536b",fontSize:13}}>Loading profile…</div></div>
                 ) : selFirm && firmProfile ? (() => {
@@ -877,7 +977,7 @@
                     .filter(p=>!selFirmName||(p.firm_name||"")===selFirmName)
                     .map((p,i) =>
                     <tr key={p.id||p.name+i} className={i%2===0?"stripe":""}>
-                      <td style={{fontWeight:600,color:"#eee"}}>{p.name}</td>
+                      <td><button className="link" onClick={()=>setSelInvestor(p.id)} style={{fontWeight:600,color:"#eee",fontSize:12}}>{p.name}</button></td>
                       <td style={{color:"#777",fontSize:11}}>{p.title || "—"}</td>
                       <td>{p.firm_name ? <button className="link" onClick={()=>goFirm(p.firm_name)} style={{fontSize:12}}>{p.firm_name}</button> : "—"}</td>
                       <td style={{fontSize:11,color:"#777"}}>{p.focus_areas || (p.firm_sectors ? JSON.parse(p.firm_sectors||"[]").join(", ") : "—")}</td>
@@ -963,6 +1063,62 @@
                       </div>
                       <div className="mono" style={{fontSize:11,color:"#34d399",marginTop:2}}>{$(v.capital)}</div>
                     </div>; })}
+                </div>
+              </div>}
+
+              {/* Monthly Deal Timeline Chart */}
+              {timeline.length > 0 && (() => {
+                const monthly = {};
+                timeline.forEach(t => {
+                  if (!t.date) return;
+                  const m = t.date.slice(0, 7);
+                  if (!monthly[m]) monthly[m] = {month: m, deals: 0, capital: 0};
+                  monthly[m].deals += t.deal_count;
+                  monthly[m].capital += t.total_capital;
+                });
+                const months = Object.values(monthly).sort((a,b) => a.month.localeCompare(b.month)).slice(-12);
+                const maxDeals = Math.max(...months.map(m => m.deals), 1);
+                const maxCap = Math.max(...months.map(m => m.capital), 1);
+                return <div style={{marginBottom:24}}>
+                  <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Monthly Deal Activity (last 12 months)</div>
+                  <div className="chart-container">
+                    <div style={{display:"flex",gap:2,alignItems:"flex-end",height:120}}>
+                      {months.map(m => <div key={m.month} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                        <div style={{fontSize:9,color:"#34d399",fontFamily:"'IBM Plex Mono',monospace"}}>{m.deals}</div>
+                        <div style={{width:"100%",display:"flex",flexDirection:"column",justifyContent:"flex-end",height:80}}>
+                          <div style={{width:"100%",background:"#7c3aed",borderRadius:"3px 3px 0 0",height:`${m.deals/maxDeals*100}%`,minHeight:2,transition:"height .3s"}} title={`${$(m.capital)} capital`} />
+                        </div>
+                        <div style={{fontSize:8,color:"#444",transform:"rotate(-45deg)",whiteSpace:"nowrap",marginTop:4}}>{m.month.slice(2)}</div>
+                      </div>)}
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",marginTop:12,fontSize:10,color:"#555"}}>
+                      <span>Total: {months.reduce((s,m)=>s+m.deals,0)} deals</span>
+                      <span>{$(months.reduce((s,m)=>s+m.capital,0))} capital</span>
+                    </div>
+                  </div>
+                </div>;
+              })()}
+
+              {/* Source Quality Breakdown */}
+              {sourceBreakdown.length > 0 && <div style={{marginBottom:24}}>
+                <div className="kpi-label" style={{marginBottom:10,fontSize:11}}>Data Source Quality</div>
+                <div className="chart-container">
+                  {sourceBreakdown.map(s => {
+                    const maxCount = Math.max(...sourceBreakdown.map(x=>x.count), 1);
+                    const confColor = s.avg_confidence >= 0.85 ? "#34d399" : s.avg_confidence >= 0.7 ? "#f59e0b" : "#ef4444";
+                    return <div key={s.source_type} className="source-bar">
+                      <span style={{width:100,fontSize:11,color:"#ddd",fontWeight:500}}>{(SRCS[s.source_type]||s.source_type||"other")}</span>
+                      <div style={{flex:1,background:"#191a2e",borderRadius:3,height:6,overflow:"hidden"}}>
+                        <div className="source-fill" style={{width:`${s.count/maxCount*100}%`,background:"#7c3aed"}} />
+                      </div>
+                      <span className="mono" style={{width:35,textAlign:"right",fontSize:10.5,color:"#ddd"}}>{s.count}</span>
+                      <span className="mono" style={{width:45,textAlign:"right",fontSize:10.5,color:confColor}}>{(s.avg_confidence*100).toFixed(0)}%</span>
+                      <span className="mono" style={{width:60,textAlign:"right",fontSize:10.5,color:"#34d399"}}>{$(s.total_amount)}</span>
+                    </div>;
+                  })}
+                  <div style={{display:"flex",justifyContent:"flex-end",gap:16,marginTop:8,fontSize:9,color:"#444"}}>
+                    <span>Count</span><span>Confidence</span><span>Capital</span>
+                  </div>
                 </div>
               </div>}
 
@@ -1145,10 +1301,41 @@
             fetch("/api/preferences").then(r=>r.ok?r.json():null).then(d=>{ if(d) setPrefs(d); });
           }} />}
 
+          {/* Investor Profile Modal */}
+          {selInvestor && investorProfile && <div className="modal-overlay" onClick={()=>setSelInvestor(null)}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{minWidth:500,maxWidth:600}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+                <div>
+                  <h3 style={{margin:0}}>{investorProfile.investor.name}</h3>
+                  <div style={{fontSize:11,color:"#777",marginTop:2}}>{investorProfile.investor.title || "Partner"} · {investorProfile.investor.firm_name || "—"}</div>
+                </div>
+                <button onClick={()=>setSelInvestor(null)} style={{color:"#555",fontSize:16}}>✕</button>
+              </div>
+              {investorProfile.investor.linkedin_url && <a href={investorProfile.investor.linkedin_url} target="_blank" rel="noopener"
+                style={{color:"#6366f1",fontSize:11,textDecoration:"none",marginBottom:12,display:"inline-block"}}>LinkedIn ↗</a>}
+              <div className="kpi-label" style={{marginBottom:6}}>Deals ({investorProfile.deals.length})</div>
+              {investorProfile.deals.length > 0 ? <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+                <th style={{cursor:"default"}}>Company</th>
+                <th style={{cursor:"default",textAlign:"right"}}>Amount</th>
+                <th style={{cursor:"default"}}>Stage</th>
+                <th style={{cursor:"default"}}>Sector</th>
+                <th style={{cursor:"default"}}>Date</th>
+              </tr></thead><tbody>
+                {investorProfile.deals.map((d,i) => <tr key={d.id} className={i%2?"":"stripe"}>
+                  <td style={{fontWeight:600,color:"#eee"}}>{d.company_name}</td>
+                  <td style={{textAlign:"right"}} className="mono green">{$(d.amount_usd)}</td>
+                  <td><Badge t={d.stage} c={SC[d.stage]} /></td>
+                  <td style={{color:CC[d.category],fontSize:11}}>{d.category||"—"}</td>
+                  <td className="mono muted" style={{fontSize:10.5}}>{d.date_announced||"—"}</td>
+                </tr>)}
+              </tbody></table> : <div className="muted" style={{padding:20,textAlign:"center"}}>No deals linked yet</div>}
+            </div>
+          </div>}
+
           {/* Footer */}
-          <div className="mono" style={{padding:"6px 20px",borderTop:"1px solid #191a2e",display:"flex",justifyContent:"space-between",background:"#0c0d13",fontSize:10,color:"#33344a"}}>
+          <div className="mono" style={{padding:"6px 20px",borderTop:"1px solid #191a2e",display:"flex",justifyContent:"space-between",background:"#0c0d13",fontSize:10,color:"#33344a",flexWrap:"wrap",gap:4}}>
             <span>{rows.length}/{deals.length} deals · {$(totCap)} · {firms.length} firms · {investors.length} partners · {portfolio.total} portfolio cos</span>
-            <span>Live from API · AlleyWatch · SEC EDGAR · Crunchbase · News · Delaware Corps</span>
+            <span>{stats && stats.last_updated ? `Updated ${stats.last_updated.slice(0,10)}` : ""} · AlleyWatch · SEC EDGAR · Crunchbase · News</span>
           </div>
         </div>
       );

@@ -11,29 +11,32 @@ deals_bp = Blueprint("deals", __name__)
 
 @deals_bp.route("/api/stats", methods=["GET"])
 def get_stats():
-    """Dashboard overview stats."""
+    """Dashboard overview stats — single combined query."""
     conn = get_connection()
-    stats = {
-        "total_deals": conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0],
-        "total_firms": conn.execute("SELECT COUNT(*) FROM firms").fetchone()[0],
-        "total_investors": conn.execute("SELECT COUNT(*) FROM investors").fetchone()[0],
-        "total_capital": conn.execute(
-            "SELECT COALESCE(SUM(amount_usd), 0) FROM deals WHERE amount_usd IS NOT NULL"
-        ).fetchone()[0],
-        "avg_deal_size": conn.execute(
-            "SELECT COALESCE(AVG(amount_usd), 0) FROM deals WHERE amount_usd IS NOT NULL"
-        ).fetchone()[0],
-        "de_incorporated_count": conn.execute(
-            "SELECT COUNT(*) FROM deals WHERE source_type = 'de_filing' "
-            "OR raw_text LIKE '%DE incorporated%' OR raw_text LIKE '%Delaware%'"
-        ).fetchone()[0],
-        "source_breakdown": {},
-    }
-    for row in conn.execute(
+    row = conn.execute("""
+        SELECT
+            (SELECT COUNT(*) FROM deals) as total_deals,
+            (SELECT COUNT(*) FROM firms) as total_firms,
+            (SELECT COUNT(*) FROM investors) as total_investors,
+            (SELECT COALESCE(SUM(amount_usd), 0) FROM deals WHERE amount_usd IS NOT NULL) as total_capital,
+            (SELECT COALESCE(AVG(amount_usd), 0) FROM deals WHERE amount_usd IS NOT NULL) as avg_deal_size,
+            (SELECT COUNT(*) FROM deals WHERE source_type = 'de_filing'
+             OR raw_text LIKE '%DE incorporated%' OR raw_text LIKE '%Delaware%') as de_incorporated_count,
+            (SELECT MAX(COALESCE(date_announced, created_at)) FROM deals) as last_updated
+    """).fetchone()
+    source_rows = conn.execute(
         "SELECT source_type, COUNT(*) as cnt FROM deals GROUP BY source_type"
-    ).fetchall():
-        stats["source_breakdown"][row["source_type"]] = row["cnt"]
-    return jsonify(stats)
+    ).fetchall()
+    return jsonify({
+        "total_deals": row["total_deals"],
+        "total_firms": row["total_firms"],
+        "total_investors": row["total_investors"],
+        "total_capital": row["total_capital"],
+        "avg_deal_size": row["avg_deal_size"],
+        "de_incorporated_count": row["de_incorporated_count"],
+        "last_updated": row["last_updated"],
+        "source_breakdown": {r["source_type"]: r["cnt"] for r in source_rows},
+    })
 
 
 @deals_bp.route("/api/deals", methods=["GET"])

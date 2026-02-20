@@ -374,6 +374,14 @@ def partners_by_category():
 def get_portfolio_linked():
     """Portfolio companies matched to deals via normalized company name."""
     conn = get_connection()
+    # Backfill normalized names if missing
+    conn.execute("""
+        UPDATE portfolio_companies
+        SET company_name_normalized = LOWER(REPLACE(REPLACE(REPLACE(
+            REPLACE(REPLACE(company_name, ' ', ''), '.', ''), ',', ''), '-', ''), '''', ''))
+        WHERE company_name_normalized IS NULL
+    """)
+    conn.commit()
     rows = conn.execute("""
         SELECT pc.id, pc.company_name, pc.company_website, pc.sector,
                pc.lead_partner, f.name as firm_name,
@@ -381,8 +389,7 @@ def get_portfolio_linked():
                c.name as category
         FROM portfolio_companies pc
         JOIN firms f ON pc.firm_id = f.id
-        JOIN deals d ON LOWER(REPLACE(REPLACE(REPLACE(pc.company_name, ' ', ''), '.', ''), ',', ''))
-                      = d.company_name_normalized
+        JOIN deals d ON pc.company_name_normalized = d.company_name_normalized
         LEFT JOIN categories c ON d.category_id = c.id
         ORDER BY d.date_announced DESC
     """).fetchall()

@@ -5,7 +5,8 @@ services:
     pythonVersion: "3.11"
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn api_server:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    startCommand: gunicorn api_server:app --bind 0.0.0.0:$PORT --workers 4 --timeout 120
+    healthCheckPath: /health
     envVars:
       - key: SECRET_KEY
         generateValue: true
