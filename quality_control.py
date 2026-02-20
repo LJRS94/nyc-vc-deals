@@ -76,22 +76,28 @@ def init_qc_tables(conn):
 
 def _log_rejection(conn, company_name: str, reason: str,
                    source_type: str = None, raw_data: str = None):
-    """Log a rejection for pattern analysis."""
-    conn.execute(
-        "INSERT INTO qc_rejections (company_name, reason, source_type, raw_data) "
-        "VALUES (?, ?, ?, ?)",
-        (company_name, reason, source_type, (raw_data or "")[:500])
-    )
-    # Update pattern tracker
-    pattern_value = _extract_pattern(company_name, reason)
-    if pattern_value:
+    """Log a rejection for pattern analysis (atomic via savepoint)."""
+    try:
+        conn.execute("SAVEPOINT rejection_log")
         conn.execute(
-            "INSERT INTO qc_patterns (pattern_type, pattern_value, hit_count, last_seen) "
-            "VALUES (?, ?, 1, CURRENT_TIMESTAMP) "
-            "ON CONFLICT(pattern_type, pattern_value) DO UPDATE SET "
-            "hit_count = hit_count + 1, last_seen = CURRENT_TIMESTAMP",
-            (reason, pattern_value)
+            "INSERT INTO qc_rejections (company_name, reason, source_type, raw_data) "
+            "VALUES (?, ?, ?, ?)",
+            (company_name, reason, source_type, (raw_data or "")[:500])
         )
+        # Update pattern tracker
+        pattern_value = _extract_pattern(company_name, reason)
+        if pattern_value:
+            conn.execute(
+                "INSERT INTO qc_patterns (pattern_type, pattern_value, hit_count, last_seen) "
+                "VALUES (?, ?, 1, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(pattern_type, pattern_value) DO UPDATE SET "
+                "hit_count = hit_count + 1, last_seen = CURRENT_TIMESTAMP",
+                (reason, pattern_value)
+            )
+        conn.execute("RELEASE rejection_log")
+    except Exception as e:
+        conn.execute("ROLLBACK TO rejection_log")
+        logging.getLogger(__name__).warning(f"Rejection log failed: {e}")
 
 
 def _extract_pattern(company_name: str, reason: str) -> Optional[str]:

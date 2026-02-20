@@ -155,6 +155,8 @@ def init_db(db_path: str = DB_PATH):
         deal_id INTEGER,
         firm_id INTEGER,
         role TEXT DEFAULT 'participant', -- 'lead' or 'participant'
+        verified INTEGER DEFAULT 0,
+        source TEXT,
         PRIMARY KEY (deal_id, firm_id),
         FOREIGN KEY (deal_id) REFERENCES deals(id),
         FOREIGN KEY (firm_id) REFERENCES firms(id)
@@ -290,6 +292,16 @@ def init_db(db_path: str = DB_PATH):
 
     conn.commit()
 
+    # Migrate deal_firms: add verified/source columns if missing
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(deal_firms)").fetchall()}
+    if "verified" not in cols:
+        conn.execute("ALTER TABLE deal_firms ADD COLUMN verified INTEGER DEFAULT 0")
+    if "source" not in cols:
+        conn.execute("ALTER TABLE deal_firms ADD COLUMN source TEXT")
+    if "verified" not in cols or "source" not in cols:
+        conn.commit()
+        logger.info("Migrated deal_firms: added verified/source columns")
+
     # Initialize QC tables
     try:
         from quality_control import init_qc_tables
@@ -315,7 +327,8 @@ def batch_connection(db_path: str = DB_PATH):
     try:
         yield conn
         conn.commit()
-    except Exception:
+    except Exception as e:
+        logger.error(f"Batch commit failed, rolling back: {e}")
         conn.rollback()
         raise
     finally:

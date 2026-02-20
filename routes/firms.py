@@ -86,7 +86,7 @@ def get_investors():
 
     if firm_id:
         wheres.append("i.firm_id = ?")
-        params.append(int(firm_id))
+        params.append(_safe_int(firm_id, 0, 0, 2147483647))
     if role_filter:
         wheres.append("LOWER(i.title) LIKE ?")
         params.append(f"%{role_filter.lower()}%")
@@ -412,14 +412,18 @@ def partners_by_category():
 def get_portfolio_linked():
     """Portfolio companies matched to deals via normalized company name."""
     conn = g.db
-    # Backfill normalized names if missing
-    conn.execute("""
-        UPDATE portfolio_companies
-        SET company_name_normalized = LOWER(REPLACE(REPLACE(REPLACE(
-            REPLACE(REPLACE(company_name, ' ', ''), '.', ''), ',', ''), '-', ''), '''', ''))
-        WHERE company_name_normalized IS NULL
-    """)
-    conn.commit()
+    # Backfill normalized names if any are missing
+    needs_norm = conn.execute(
+        "SELECT COUNT(*) FROM portfolio_companies WHERE company_name_normalized IS NULL"
+    ).fetchone()[0]
+    if needs_norm:
+        conn.execute("""
+            UPDATE portfolio_companies
+            SET company_name_normalized = LOWER(REPLACE(REPLACE(REPLACE(
+                REPLACE(REPLACE(company_name, ' ', ''), '.', ''), ',', ''), '-', ''), '''', ''))
+            WHERE company_name_normalized IS NULL
+        """)
+        conn.commit()
     rows = conn.execute("""
         SELECT pc.id, pc.company_name, pc.company_website, pc.sector,
                pc.lead_partner, f.name as firm_name,

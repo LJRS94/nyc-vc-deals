@@ -107,7 +107,7 @@ def health_check():
         count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
         return jsonify({"status": "ok", "deals": count})
     except Exception as e:
-        return jsonify({"status": "error", "detail": str(e)}), 500
+        return jsonify({"status": "error", "detail": str(e)}), 503
 
 
 @app.route("/")
@@ -428,7 +428,7 @@ def _run_scrape_background():
             logger.warning(f"Firm seeding warning: {e}")
 
         # Clean up VC firms mistakenly listed as startups (single SQL using firm names)
-        conn = g.db
+        conn = get_connection()
         try:
             firm_names = [r["name"] for r in conn.execute("SELECT name FROM firms").fetchall()]
             if firm_names:
@@ -447,15 +447,11 @@ def _run_scrape_background():
                     logger.info(f"Cleanup: removed {len(vc_ids)} VC-firm deals")
         except Exception as e:
             logger.warning(f"Cleanup warning: {e}")
-        finally:
-            conn.close()
 
         # Initialize QC tables
         try:
             from quality_control import init_qc_tables, run_audit, update_auto_reject_patterns, merge_cross_source_duplicates
-            conn = g.db
             init_qc_tables(conn)
-            conn.close()
         except Exception as e:
             logger.warning(f"QC init warning: {e}")
 
@@ -470,7 +466,7 @@ def _run_scrape_background():
             logger.warning(f"SEC scraper warning: {e}")
 
         # Post-scrape: cross-source dedup + QC audit
-        conn = g.db
+        conn = get_connection()
 
         try:
             merged = merge_cross_source_duplicates(conn)
@@ -505,8 +501,6 @@ def _run_scrape_background():
             _generate_notifications(conn)
         except Exception as e:
             logger.warning(f"Notification generation warning: {e}")
-        finally:
-            conn.close()
 
         _scrape_status["last_result"] = f"Completed. {deal_count} total deals."
         logger.info(f"Background scrape complete: {deal_count} deals")
@@ -532,7 +526,7 @@ def _run_portfolio_scrape():
         seed_firms()
         run_portfolio_scraper()
 
-        conn = g.db
+        conn = get_connection()
         pc_count = conn.execute("SELECT COUNT(*) FROM portfolio_companies").fetchone()[0]
 
         # Auto-verify deal-firm links against portfolio data
@@ -545,8 +539,6 @@ def _run_portfolio_scrape():
             )
         except Exception as e:
             logger.warning(f"Portfolio verification warning: {e}")
-
-        conn.close()
 
         _scrape_status["last_result"] = f"Portfolio scrape done. {pc_count} companies."
         logger.info(f"Portfolio scrape complete: {pc_count} companies")
