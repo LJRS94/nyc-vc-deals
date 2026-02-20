@@ -284,6 +284,7 @@ def api_mark_notifications_read():
 
 _scrape_lock = threading.Lock()
 _scrape_status = {"running": False, "last_run": None, "last_result": None}
+_scheduler_lock_fd = None  # held open to maintain file lock
 
 logger = logging.getLogger("api_server")
 
@@ -564,8 +565,25 @@ def _run_portfolio_scrape():
 
 
 def _start_scheduler():
-    """Start background threads: deals on startup + Sunday 9 PM EST, portfolio on Friday 9 PM EST."""
+    """Start background threads: deals on startup + Sunday 9 PM EST, portfolio on Friday 9 PM EST.
+
+    Uses a file lock so only one gunicorn worker runs the scheduler.
+    """
     import time
+    import fcntl
+
+    # Only one worker should run the scheduler — use a file lock
+    lock_path = os.path.join(
+        os.environ.get("DATABASE_PATH", ""), "..", ".scheduler.lock"
+    ) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_scheduler.lock"
+    lock_path = os.path.normpath(lock_path)
+    global _scheduler_lock_fd
+    try:
+        _scheduler_lock_fd = open(lock_path, "w")
+        fcntl.flock(_scheduler_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        logger.info("Another worker owns the scheduler — skipping")
+        return
 
     def deals_scheduler():
         time.sleep(STARTUP_SCRAPE_DELAY)
