@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scr
 
 from database import init_db, get_connection, migrate_db
 from fetcher import clear_cache
-from scrapers.firm_scraper import seed_firms, run_firm_scraper
+from scrapers.firm_scraper import seed_firms, run_firm_scraper, run_team_scraper
 from scrapers.news_scraper import run_news_scraper, run_google_batch
 from scrapers.sec_scraper import run_sec_scraper
 from scrapers.delaware_scraper import run_delaware_scraper
@@ -439,6 +439,74 @@ def discover_firms(promote: bool = False):
     print(f"✓ {len(candidates)} new firm(s) added to database")
 
 
+def backfill_investors_from_metadata(dry_run: bool = False) -> dict:
+    """
+    Backfill investor records from existing deal_metadata.
+    Scans for 'crunchbase_investors' metadata keys and creates proper
+    investor records + deal-investor links.
+    """
+    from database import upsert_investor, link_deal_investor
+
+    stats = {"deals_scanned": 0, "investors_created": 0, "links_created": 0}
+    conn = get_connection()
+
+    rows = conn.execute(
+        "SELECT deal_id, value FROM deal_metadata WHERE key = 'crunchbase_investors'"
+    ).fetchall()
+
+    logger.info(f"[Backfill] Found {len(rows)} deals with crunchbase_investors metadata (dry_run={dry_run})")
+
+    for row in rows:
+        deal_id = row["deal_id"]
+        stats["deals_scanned"] += 1
+
+        try:
+            investor_names = json.loads(row["value"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        if not isinstance(investor_names, list):
+            continue
+
+        for inv_name in investor_names:
+            if not inv_name or not isinstance(inv_name, str):
+                continue
+            inv_name = inv_name.strip()
+            if not inv_name:
+                continue
+
+            if dry_run:
+                logger.info(f"  [DRY RUN] Would create investor '{inv_name}' for deal {deal_id}")
+                stats["investors_created"] += 1
+                continue
+
+            try:
+                # Check if this investor name matches a known firm
+                firm_row = conn.execute(
+                    "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
+                    (inv_name,)
+                ).fetchone()
+                firm_id = firm_row["id"] if firm_row else None
+
+                inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
+                stats["investors_created"] += 1
+
+                link_deal_investor(conn, deal_id, inv_id)
+                stats["links_created"] += 1
+            except Exception as e:
+                logger.debug(f"[Backfill] Failed to create investor '{inv_name}': {e}")
+
+    if not dry_run:
+        conn.commit()
+
+    logger.info(
+        f"[Backfill] Done: {stats['deals_scanned']} deals scanned, "
+        f"{stats['investors_created']} investors created, "
+        f"{stats['links_created']} links created"
+    )
+    return stats
+
+
 def main():
     parser = argparse.ArgumentParser(description="NYC VC Deal Scraper & Organizer")
     sub = parser.add_subparsers(dest="command")
@@ -485,6 +553,13 @@ def main():
     discover_p = firms_sub.add_parser("discover", help="Find new firms from scraped deals")
     discover_p.add_argument("--promote", action="store_true",
                             help="Add discovered firms to firms.json")
+
+    team_p = sub.add_parser("scrape-team", help="Scrape firm team pages for investor names")
+    team_p.add_argument("--limit", type=int, default=None, help="Max firms to scrape")
+    team_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
+
+    backfill_p = sub.add_parser("backfill-investors", help="Backfill investor records from deal metadata")
+    backfill_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
 
     args = parser.parse_args()
 
@@ -551,6 +626,22 @@ def main():
             discover_firms(promote=args.promote)
         else:
             firms_p.print_help()
+
+    elif args.command == "scrape-team":
+        stats = run_team_scraper(limit=args.limit, dry_run=args.dry_run)
+        print(
+            f"Team scraper: {stats['firms_scraped']} firms scraped, "
+            f"{stats['team_members_found']} members found, "
+            f"{stats['investors_created']} investors created"
+        )
+
+    elif args.command == "backfill-investors":
+        stats = backfill_investors_from_metadata(dry_run=args.dry_run)
+        print(
+            f"Backfill: {stats['deals_scanned']} deals scanned, "
+            f"{stats['investors_created']} investors created, "
+            f"{stats['links_created']} links created"
+        )
 
 
 if __name__ == "__main__":

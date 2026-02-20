@@ -417,16 +417,42 @@ def fetch_form_d_details(cik: str = None, accession: str = None) -> Optional[Dic
                 except ValueError:
                     pass
 
-        # Parse related persons / investors
+        # Parse related persons / investors (name + title)
         for elem in root.iter():
             tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-            if tag in ("relatedPersonName", "RelatedPersonName"):
+            if tag in ("relatedPersonInfo", "RelatedPersonInfo"):
                 name_parts = []
-                for child in elem:
-                    if child.text:
-                        name_parts.append(child.text.strip())
+                title = None
+                for child in elem.iter():
+                    child_tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                    if child_tag in ("relatedPersonName", "RelatedPersonName"):
+                        for name_child in child:
+                            if name_child.text:
+                                name_parts.append(name_child.text.strip())
+                    if child_tag in ("relatedPersonTitle", "RelatedPersonTitle",
+                                     "relationshipClarification", "RelationshipClarification"):
+                        if child.text and child.text.strip():
+                            title = child.text.strip()
                 if name_parts:
-                    result["related_persons"].append(" ".join(name_parts))
+                    result["related_persons"].append({
+                        "name": " ".join(name_parts),
+                        "title": title,
+                    })
+
+        # Fallback: if no relatedPersonInfo containers found, try flat relatedPersonName
+        if not result["related_persons"]:
+            for elem in root.iter():
+                tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                if tag in ("relatedPersonName", "RelatedPersonName"):
+                    name_parts = []
+                    for child in elem:
+                        if child.text:
+                            name_parts.append(child.text.strip())
+                    if name_parts:
+                        result["related_persons"].append({
+                            "name": " ".join(name_parts),
+                            "title": None,
+                        })
 
         # Check if NYC
         address = f"{result.get('city', '')} {result.get('state', '')} {result.get('zip', '')} {result.get('street', '')}"
@@ -596,8 +622,17 @@ def run_sec_scraper(days_back: int = 180):
 
                     # Link investors
                     if details and details.get("related_persons"):
-                        for person_name in details["related_persons"][:10]:
-                            inv_id = upsert_investor(conn, person_name)
+                        for person in details["related_persons"][:10]:
+                            if isinstance(person, dict):
+                                person_name = person["name"]
+                                person_title = person.get("title")
+                            else:
+                                person_name = person
+                                person_title = None
+                            kwargs = {}
+                            if person_title:
+                                kwargs["title"] = person_title
+                            inv_id = upsert_investor(conn, person_name, **kwargs)
                             link_deal_investor(conn, deal_id, inv_id)
 
             finish_scrape(conn, log_id, "success", total_found, total_new)

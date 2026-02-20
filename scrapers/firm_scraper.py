@@ -15,7 +15,8 @@ from bs4 import BeautifulSoup
 
 from database import (
     get_connection, batch_connection, upsert_firm, insert_deal, link_deal_firm,
-    log_scrape, finish_scrape, get_category_id, upsert_portfolio_company
+    log_scrape, finish_scrape, get_category_id, upsert_portfolio_company,
+    upsert_investor,
 )
 from fetcher import fetch
 
@@ -554,6 +555,264 @@ def scrape_firm_news(firm_name: str, website: str) -> List[Dict]:
 
     logger.info(f"[{firm_name}] Found {len(results)} news items")
     return results
+
+
+# ── Team Page Scraping ─────────────────────────────────────────
+
+# Common URL paths for team/people pages
+_TEAM_PATHS = ["/team", "/about/team", "/people", "/about", "/partners", "/about-us", "/our-team"]
+
+# Titles that indicate investment-relevant roles
+_INVESTMENT_TITLES_RE = re.compile(
+    r"""(?ix)
+    (?:
+        Partner
+      | Managing\s+Director
+      | Principal
+      | Vice\s+President
+      | \bVP\b
+      | Analyst
+      | \bAssociate\b
+      | Venture\s+Partner
+      | General\s+Partner
+      | Founding\s+Partner
+      | Managing\s+Partner
+      | Investment\s+Director
+      | Director
+      | Managing\s+Member
+      | Co-?Founder
+      | Founder
+    )
+    """,
+)
+
+# Titles to skip (non-investment roles)
+_SKIP_TITLES_RE = re.compile(
+    r"""(?ix)
+    (?:
+        Office\s+Manager
+      | Executive\s+Assistant
+      | Administrative
+      | Receptionist
+      | Marketing\s+(?:Manager|Coordinator|Associate|Director)
+      | Communications
+      | Human\s+Resources
+      | \bHR\b
+      | Accounting
+      | Legal\s+(?:Counsel|Assistant)
+      | IT\s+(?:Manager|Director|Support)
+      | Graphic\s+Design
+      | Event
+    )
+    """,
+)
+
+
+def scrape_firm_team(firm_name: str, website: str, firm_id: int) -> List[Dict]:
+    """
+    Scrape a firm's team/people page for investor names, titles, and LinkedIn URLs.
+    Returns list of dicts: {name, title, linkedin_url}.
+    """
+    results = []
+    base = website.rstrip("/")
+
+    # Step 1: Find a working team page
+    team_html = None
+    team_url = None
+    for path in _TEAM_PATHS:
+        url = base + path
+        try:
+            resp = fetch(url, timeout=15, ttl=86400 * 7)
+            if resp.status_code == 200:
+                team_html = resp.text
+                team_url = url
+                break
+        except Exception:
+            continue
+
+    if not team_html:
+        logger.debug(f"[{firm_name}] No team page found")
+        return results
+
+    soup = BeautifulSoup(team_html, "html.parser")
+
+    # Step 2: Try JSON-LD Person schema first
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            ld = json.loads(script.string or "")
+            items = ld if isinstance(ld, list) else [ld]
+            for item in items:
+                if item.get("@type") == "Person":
+                    name = item.get("name", "").strip()
+                    title = item.get("jobTitle", "").strip() or None
+                    linkedin = None
+                    for link in (item.get("sameAs") or []):
+                        if "linkedin.com/in/" in str(link):
+                            linkedin = link
+                            break
+                    if name:
+                        results.append({"name": name, "title": title, "linkedin_url": linkedin})
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    if results:
+        logger.info(f"[{firm_name}] Found {len(results)} team members via JSON-LD")
+        return _filter_team_results(results)
+
+    # Step 3: Find repeating team card containers
+    card_selectors = [
+        "div[class*='team-member']", "div[class*='team_member']",
+        "div[class*='person']", "li[class*='team']",
+        "div[class*='member']", "article[class*='team']",
+        "div[class*='staff']", "div[class*='bio']",
+        "div[class*='leader']", "div[class*='partner']",
+    ]
+
+    cards = []
+    for sel in card_selectors:
+        cards = soup.select(sel)
+        if len(cards) >= 2:  # Need at least 2 to confirm it's a pattern
+            break
+
+    if not cards:
+        # Fallback: look for sections with multiple h2/h3 headings that look like names
+        cards = _find_name_card_containers(soup)
+
+    for card in cards:
+        name = None
+        title = None
+        linkedin_url = None
+
+        # Extract name from heading
+        name_el = card.find(["h2", "h3", "h4"])
+        if name_el:
+            name = name_el.get_text(strip=True)
+
+        # If no heading, try first bold/strong text
+        if not name:
+            strong = card.find(["strong", "b"])
+            if strong:
+                name = strong.get_text(strip=True)
+
+        if not name:
+            continue
+
+        # Skip if name doesn't look like a person name (too short, has digits, etc.)
+        if len(name) < 3 or len(name) > 60 or re.search(r"\d", name):
+            continue
+        # Skip if name looks like a company/section header
+        if any(kw in name.lower() for kw in ["portfolio", "team", "about", "contact", "investment"]):
+            continue
+
+        # Extract title from adjacent text elements
+        for el in card.find_all(["p", "span", "div", "h5", "h6"]):
+            text = el.get_text(strip=True)
+            if text and text != name and _INVESTMENT_TITLES_RE.search(text):
+                title = text
+                break
+
+        # Extract LinkedIn URL
+        for a in card.find_all("a", href=True):
+            href = a["href"]
+            if "linkedin.com/in/" in href:
+                linkedin_url = href
+                break
+
+        results.append({"name": name, "title": title, "linkedin_url": linkedin_url})
+
+    logger.info(f"[{firm_name}] Found {len(results)} team members from {team_url}")
+    return _filter_team_results(results)
+
+
+def _find_name_card_containers(soup: BeautifulSoup) -> list:
+    """
+    Fallback: find parent containers that each have exactly one heading
+    that looks like a person name (2-4 words, no digits).
+    """
+    name_re = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$")
+    containers = []
+    for heading in soup.find_all(["h2", "h3", "h4"]):
+        text = heading.get_text(strip=True)
+        if name_re.match(text) and heading.parent:
+            containers.append(heading.parent)
+    return containers
+
+
+def _filter_team_results(results: List[Dict]) -> List[Dict]:
+    """Filter team results to investment-relevant members."""
+    filtered = []
+    for r in results:
+        title = r.get("title") or ""
+        # If there's a title, check it's investment-relevant
+        if title and _SKIP_TITLES_RE.search(title):
+            continue
+        # If there's no title, still include — we can't know for sure
+        filtered.append(r)
+    return filtered
+
+
+def run_team_scraper(limit: Optional[int] = None, dry_run: bool = False) -> Dict:
+    """
+    Scrape team pages for all firms with websites. Creates investor records.
+
+    Args:
+        limit: Max number of firms to scrape (None = all).
+        dry_run: If True, log but don't write to DB.
+
+    Returns:
+        Stats dict: {firms_scraped, team_members_found, investors_created}.
+    """
+    import time as _time
+
+    stats = {"firms_scraped": 0, "team_members_found": 0, "investors_created": 0}
+    conn = get_connection()
+
+    query = "SELECT id, name, website FROM firms WHERE website IS NOT NULL"
+    params = ()
+    if limit:
+        query += " LIMIT ?"
+        params = (limit,)
+    firms = conn.execute(query, params).fetchall()
+
+    logger.info(f"[TeamScraper] Scanning {len(firms)} firms for team pages (dry_run={dry_run})")
+
+    for firm in firms:
+        firm_id = firm["id"]
+        firm_name = firm["name"]
+        website = firm["website"]
+
+        if not website:
+            continue
+
+        members = scrape_firm_team(firm_name, website, firm_id)
+        stats["firms_scraped"] += 1
+        stats["team_members_found"] += len(members)
+
+        if not dry_run:
+            for m in members:
+                kwargs = {}
+                if m.get("title"):
+                    kwargs["title"] = m["title"]
+                if m.get("linkedin_url"):
+                    kwargs["linkedin_url"] = m["linkedin_url"]
+                try:
+                    upsert_investor(conn, name=m["name"], firm_id=firm_id, **kwargs)
+                    stats["investors_created"] += 1
+                except Exception as e:
+                    logger.debug(f"[TeamScraper] Failed to upsert investor {m['name']}: {e}")
+
+        # Rate limit: 2s between firms
+        _time.sleep(2)
+
+    if not dry_run:
+        conn.commit()
+
+    logger.info(
+        f"[TeamScraper] Done: {stats['firms_scraped']} firms scraped, "
+        f"{stats['team_members_found']} members found, "
+        f"{stats['investors_created']} investors created"
+    )
+    return stats
 
 
 def run_portfolio_scraper():

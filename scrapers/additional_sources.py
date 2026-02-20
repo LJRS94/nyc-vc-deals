@@ -27,6 +27,7 @@ from database import (
     get_connection, batch_connection, insert_deal,
     upsert_deal_metadata, get_category_id,
     log_scrape, finish_scrape,
+    upsert_investor, link_deal_investor,
 )
 from fetcher import fetch
 from scrapers.utils import (
@@ -436,6 +437,18 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
                                 conn, deal_id, "crunchbase_investors",
                                 json.dumps(investor_names),
                             )
+                            # Also create proper investor records
+                            for inv_name in investor_names:
+                                try:
+                                    firm_row = conn.execute(
+                                        "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
+                                        (inv_name,)
+                                    ).fetchone()
+                                    firm_id = firm_row["id"] if firm_row else None
+                                    inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
+                                    link_deal_investor(conn, deal_id, inv_id)
+                                except Exception as e:
+                                    logger.debug(f"[Crunchbase] Failed to create investor '{inv_name}': {e}")
 
                 except Exception as e:
                     logger.debug(f"[Crunchbase] Failed to insert round: {e}")
