@@ -769,9 +769,13 @@
                         <td><Badge t={d.stage} c={SC[d.stage]} /></td>
                         <td><button className="link" onClick={e=>{e.stopPropagation();setCatF(d.category)}} style={{color:CC[d.category],fontSize:11.5,fontWeight:500}}>{d.category}</button></td>
                         <td className="mono muted" style={{fontSize:11}}>{(d.date_announced||"").slice(5)}</td>
-                        <td>{lead && <button className="link" onClick={e=>{e.stopPropagation();goFirm(lead)}} style={{fontSize:11.5}}>★ {lead}</button>}
-                          {others.length>0 && <span style={{fontSize:10,color:"#4a4b60",marginLeft:4}}>+{others.length}</span>}
-                          {!(d.firms||[]).length && <span className="muted">—</span>}</td>
+                        <td>{(()=>{const leadPartner=(d.investors||[]).find(p=>(d.lead_firms||[]).includes(p.firm));
+                          if(leadPartner) return <React.Fragment><button className="link" onClick={e=>{e.stopPropagation();setSelInvestor(leadPartner.id)}} style={{fontSize:11.5}}>★ {leadPartner.name}</button>
+                            <div style={{fontSize:9.5,color:"#4a4b60"}}>{leadPartner.firm}</div></React.Fragment>;
+                          if(lead) return <React.Fragment><button className="link" onClick={e=>{e.stopPropagation();goFirm(lead)}} style={{fontSize:11.5}}>★ {lead}</button>
+                            {others.length>0 && <span style={{fontSize:10,color:"#4a4b60",marginLeft:4}}>+{others.length}</span>}</React.Fragment>;
+                          return <span className="muted">—</span>;
+                        })()}</td>
                         <td style={{color:(d.confidence_score||0)>=.9?"#22c55e":(d.confidence_score||0)>=.7?"#f59e0b":"#ef4444",textAlign:"right",fontSize:10.5,fontFamily:"'IBM Plex Mono',monospace"}}>
                           {d.confidence_score?`${(d.confidence_score*100).toFixed(0)}%`:"—"}
                           {(() => { const cp=dealCompleteness(d); const cc=cp>=80?"#34d399":cp>=60?"#f59e0b":"#ef4444";
@@ -783,9 +787,16 @@
                         <div><div className="kpi-label" style={{marginBottom:5}}>Overview</div>
                           <div style={{color:"#999",lineHeight:1.6}}>{d.description}</div>
                           {d.founders && <div style={{marginTop:6,color:"#777"}}>Founded by <span style={{color:"#bbb"}}>{d.founders}</span></div>}</div>
-                        <div><div className="kpi-label" style={{marginBottom:5}}>Investors</div>
-                          {(d.investors||d.firms||[]).map((f,j)=><div key={j}><button className="link" onClick={()=>goFirm(typeof f==="string"?f:f.name)} style={{fontSize:11.5,fontWeight:(d.lead_firms||[]).includes(typeof f==="string"?f:f.name)?600:400,color:(d.lead_firms||[]).includes(typeof f==="string"?f:f.name)?"#a78bfa":"#777"}}>{(d.lead_firms||[]).includes(typeof f==="string"?f:f.name)?"★ ":"  "}{typeof f==="string"?f:f.name}</button></div>)}
-                          {!(d.firms||[]).length && <span className="muted">Undisclosed</span>}</div>
+                        <div><div className="kpi-label" style={{marginBottom:5}}>Firms</div>
+                          {(d.firms||[]).map((f,j)=>{const fn=typeof f==="string"?f:f.name;const isLead=(d.lead_firms||[]).includes(fn);
+                            return <div key={j}><button className="link" onClick={()=>goFirm(fn)} style={{fontSize:11.5,fontWeight:isLead?600:400,color:isLead?"#a78bfa":"#777"}}>{isLead?"★ ":"  "}{fn}</button></div>;})}
+                          {!(d.firms||[]).length && <span className="muted">Undisclosed</span>}
+                          {(d.investors||[]).length>0 && <div className="kpi-label" style={{marginTop:8,marginBottom:5}}>Partners</div>}
+                          {(d.investors||[]).map((p,j)=><div key={j} style={{marginBottom:2}}>
+                            <button className="link" onClick={()=>setSelInvestor(p.id)} style={{fontSize:11.5,fontWeight:600,color:"#ddd"}}>{p.name}</button>
+                            {p.title && <span style={{fontSize:10,color:"#555",marginLeft:4}}>{p.title}</span>}
+                            {p.firm && <span style={{fontSize:10,color:"#444",marginLeft:4}}>@ {p.firm}</span>}
+                          </div>)}</div>
                         <div><div className="kpi-label" style={{marginBottom:5}}>Financials</div>
                           <div style={{display:"grid",gridTemplateColumns:"80px 1fr",gap:"3px 10px"}}>
                             <span className="muted">Raised</span><span className="mono green">{d.amount_usd?`$${(d.amount_usd/1e6).toFixed(2)}M`:"—"}</span>
@@ -1058,12 +1069,14 @@
                 <tbody>
                   {investors.filter(p=>!q||p.name.toLowerCase().includes(q.toLowerCase())||(p.firm_name||"").toLowerCase().includes(q.toLowerCase()))
                     .filter(p=>!selFirmName||(p.firm_name||"")===selFirmName)
+                    .sort((a,b)=>(b.deal_count||0)-(a.deal_count||0))
                     .map((p,i) =>
                     <tr key={p.id||p.name+i} className={i%2===0?"stripe":""}>
-                      <td><button className="link" onClick={()=>setSelInvestor(p.id)} style={{fontWeight:600,color:"#eee",fontSize:12}}>{p.name}</button></td>
+                      <td><button className="link" onClick={()=>setSelInvestor(p.id)} style={{fontWeight:600,color:"#eee",fontSize:12}}>{p.name}</button>
+                        {p.linkedin_url && <a href={p.linkedin_url} target="_blank" rel="noopener" onClick={e=>e.stopPropagation()} style={{color:"#6366f1",fontSize:9,marginLeft:4,textDecoration:"none"}}>in</a>}</td>
                       <td style={{color:"#777",fontSize:11}}>{p.title || "—"}</td>
                       <td>{p.firm_name ? <button className="link" onClick={()=>goFirm(p.firm_name)} style={{fontSize:12}}>{p.firm_name}</button> : "—"}</td>
-                      <td style={{fontSize:11,color:"#777"}}>{p.focus_areas || (p.firm_sectors ? JSON.parse(p.firm_sectors||"[]").join(", ") : "—")}</td>
+                      <td style={{fontSize:11,color:"#777"}}>{p.focus_areas || (p.firm_sectors ? (() => { try { return JSON.parse(p.firm_sectors).join(", "); } catch(e) { return p.firm_sectors; } })() : "—")}</td>
                       <td className="mono" style={{textAlign:"right",fontWeight:700,color:"#ddd"}}>{p.deal_count||0}</td>
                     </tr>
                   )}

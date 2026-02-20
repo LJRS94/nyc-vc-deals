@@ -43,19 +43,34 @@ def get_deal_feed():
             GROUP_CONCAT(DISTINCT f.name) as firms,
             GROUP_CONCAT(DISTINCT
                 CASE WHEN df.role = 'lead' THEN f.name END
-            ) as lead_firms,
-            GROUP_CONCAT(DISTINCT i.name) as investors
+            ) as lead_firms
         FROM deals d
         LEFT JOIN categories c ON d.category_id = c.id
         LEFT JOIN deal_firms df ON d.id = df.deal_id
         LEFT JOIN firms f ON df.firm_id = f.id
-        LEFT JOIN deal_investors di ON d.id = di.deal_id
-        LEFT JOIN investors i ON di.investor_id = i.id
         WHERE {where_sql}
         GROUP BY d.id
         ORDER BY d.date_announced DESC, d.created_at DESC
         LIMIT ?
     """, params + [FEED_MAX_RESULTS]).fetchall()
+
+    # Batch-fetch investors for all deals (richer data than GROUP_CONCAT)
+    deal_ids = [r["id"] for r in rows]
+    investors_by_deal = {}
+    if deal_ids:
+        ph = ",".join(["?"] * len(deal_ids))
+        for ir in conn.execute(f"""
+            SELECT di.deal_id, i.id as investor_id, i.name, i.title,
+                   f.name as firm_name
+            FROM deal_investors di
+            JOIN investors i ON di.investor_id = i.id
+            LEFT JOIN firms f ON i.firm_id = f.id
+            WHERE di.deal_id IN ({ph})
+        """, deal_ids).fetchall():
+            investors_by_deal.setdefault(ir["deal_id"], []).append({
+                "id": ir["investor_id"], "name": ir["name"],
+                "title": ir["title"], "firm": ir["firm_name"],
+            })
 
     deals = []
     for r in rows:
@@ -82,7 +97,7 @@ def get_deal_feed():
             "category": r["category"],
             "firms": [x for x in (r["firms"] or "").split(",") if x],
             "lead_firms": [x for x in (r["lead_firms"] or "").split(",") if x],
-            "investors": [x for x in (r["investors"] or "").split(",") if x],
+            "investors": investors_by_deal.get(r["id"], []),
             "founders": founders,
             "total_raised": total_raised,
         })
