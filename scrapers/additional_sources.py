@@ -23,6 +23,10 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
+from config import (
+    OPENCORPORATES_TTL, CRUNCHBASE_TTL, SBIR_TTL, SBIR_CSV_URL,
+    CLEARBIT_TTL, CLEARBIT_FREE_LIMIT, HUNTER_TTL, HUNTER_FREE_LIMIT,
+)
 from database import (
     get_connection, batch_connection, insert_deal,
     upsert_deal_metadata, get_category_id,
@@ -90,7 +94,7 @@ OPENCORPORATES_SEARCH_TERMS = [
     "platform", "labs", "data", "cloud", "analytics",
 ]
 
-OPENCORPORATES_TTL = 86400 * 7  # 7 days — registrations don't change
+# TTL imported from config
 
 
 def run_opencorporates_scraper(days_back: int = 30) -> dict:
@@ -237,7 +241,7 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
 #  2. Crunchbase Basic API
 # ═══════════════════════════════════════════════════════════════
 
-CRUNCHBASE_TTL = 86400 * 3  # 3 days — funding rounds update frequently
+# TTL imported from config
 
 
 def run_crunchbase_scraper(days_back: int = 30) -> dict:
@@ -497,8 +501,7 @@ def run_ny_dos_scraper() -> dict:
 #  4. SBIR.gov Federal Grants
 # ═══════════════════════════════════════════════════════════════
 
-SBIR_CSV_URL = "https://data.www.sbir.gov/awarddatapublic/award_data.csv"
-SBIR_TTL = 86400 * 7  # 7 days — government data updates slowly
+# SBIR_CSV_URL, SBIR_TTL imported from config
 
 
 def run_sbir_scraper(days_back: int = 180) -> dict:
@@ -684,8 +687,7 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
 #  5. Clearbit/HubSpot Enrichment
 # ═══════════════════════════════════════════════════════════════
 
-CLEARBIT_TTL = 86400 * 14  # 14 days — company data changes slowly
-CLEARBIT_FREE_LIMIT = 45   # buffer from 50/month free tier
+# CLEARBIT_TTL, CLEARBIT_FREE_LIMIT imported from config
 
 
 def enrich_with_clearbit(limit: int = CLEARBIT_FREE_LIMIT, dry_run: bool = False) -> dict:
@@ -843,8 +845,7 @@ def enrich_with_clearbit(limit: int = CLEARBIT_FREE_LIMIT, dry_run: bool = False
 #  6. Hunter.io Domain Validation
 # ═══════════════════════════════════════════════════════════════
 
-HUNTER_TTL = 86400 * 30  # 30 days — domain validation is stable
-HUNTER_FREE_LIMIT = 20    # buffer from 25/month free tier
+# HUNTER_TTL, HUNTER_FREE_LIMIT imported from config
 
 
 def validate_domains_with_hunter(limit: int = HUNTER_FREE_LIMIT, dry_run: bool = False) -> dict:

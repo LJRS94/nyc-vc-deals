@@ -89,6 +89,61 @@
 
     function Badge({t,c}) { return <span className="badge" style={{background:(c||"#555")+"18",color:c||"#999",border:`1px solid ${(c||"#555")}25`}}>{t}</span>; }
 
+    function KPIRow({items}) {
+      return <div style={{display:"flex",gap:14,marginBottom:16,flexWrap:"wrap"}}>
+        {items.map(k => <div key={k.l} className="kpi"><div className="kpi-label">{k.l}</div><div className="kpi-val mono" style={{color:k.c}}>{k.v}</div></div>)}
+      </div>;
+    }
+
+    function FirmDealTable({deals, limit, showDesc, fullDate}) {
+      const shown = limit ? deals.slice(0, limit) : deals;
+      return <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+        {["Company","Amount","Stage","Sector","Role","Date"].map(h=>
+          <th key={h} style={{cursor:"default",textAlign:h==="Amount"?"right":"left"}}>{h}</th>)}
+      </tr></thead><tbody>
+        {shown.map((d,i) =>
+          <tr key={d.id} className={i%2?"":"stripe"}>
+            <td><span style={{fontWeight:600,color:"#eee"}}>{d.company_name}</span>
+              {showDesc && d.company_description && <div style={{fontSize:10,color:"#4a4b60",marginTop:1}}>{d.company_description}</div>}
+            </td>
+            <td style={{textAlign:"right"}} className="mono green"><b>{$(d.amount_usd)}</b></td>
+            <td><Badge t={d.stage} c={SC[d.stage]} /></td>
+            <td style={{color:CC[d.category],fontSize:11}}>{d.category}</td>
+            <td><Badge t={d.role==="lead"?"★ Lead":"Co-Inv"} c={d.role==="lead"?"#a78bfa":"#4a4b60"} /></td>
+            <td className="mono muted" style={{fontSize:10.5}}>{fullDate ? (d.date_announced||"") : (d.date_announced||"").slice(5)}</td>
+          </tr>
+        )}
+      </tbody></table>;
+    }
+
+    function PortfolioTable({companies, showFirm}) {
+      return <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
+        <th style={{cursor:"default"}}>Company</th>
+        {showFirm && <th style={{cursor:"default"}}>Firm</th>}
+        <th style={{cursor:"default"}}>Sector</th>
+        <th style={{cursor:"default"}}>Lead Partner</th>
+        <th style={{cursor:"default"}}>Website</th>
+      </tr></thead><tbody>
+        {companies.map((c,i) =>
+          <tr key={c.id||i} className={i%2?"":"stripe"}>
+            <td><div style={{fontWeight:600,color:"#eee"}}>{c.company_name}</div>
+              {c.description && <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,maxWidth:300,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.description}</div>}
+            </td>
+            {showFirm && <td><span style={{color:"#a78bfa",fontSize:11.5,fontWeight:500}}>{c.firm_name}</span></td>}
+            <td style={{color:"#777",fontSize:11}}>{c.sector||"—"}</td>
+            <td style={{color:"#888",fontSize:11}}>{c.lead_partner||"—"}</td>
+            <td>{c.company_website
+              ? <a href={c.company_website.startsWith("http")?c.company_website:"https://"+c.company_website} target="_blank" rel="noopener"
+                  style={{color:"#6366f1",fontSize:11,textDecoration:"none"}}>
+                  {c.company_website.replace(/https?:\/\/(www\.)?/,"").replace(/\/$/,"").slice(0,30)} ↗
+                </a>
+              : <span className="muted">—</span>}
+            </td>
+          </tr>
+        )}
+      </tbody></table>;
+    }
+
     /* ── Preferences Modal ── */
     function PrefsModal({prefs, allStages, allCats, onSave, onClose}) {
       const [sectors, setSectors] = useState(prefs.sectors || []);
@@ -608,17 +663,13 @@
                     </div>
 
                     {/* KPIs */}
-                    <div style={{display:"flex",gap:14,marginBottom:16,flexWrap:"wrap"}}>
-                      {[
-                        {l:"Deals",v:kpis.deal_count,c:"#eee"},
-                        {l:"Capital",v:$(kpis.total_invested),c:"#34d399"},
-                        {l:"Lead Rounds",v:kpis.lead_count,c:"#a78bfa"},
-                        {l:"Team Size",v:kpis.team_count,c:"#60a5fa"},
-                        {l:"Portfolio Cos",v:kpis.portfolio_count,c:"#f59e0b"},
-                      ].map(k =>
-                        <div key={k.l} className="kpi"><div className="kpi-label">{k.l}</div><div className="kpi-val mono" style={{color:k.c}}>{k.v}</div></div>
-                      )}
-                    </div>
+                    <KPIRow items={[
+                      {l:"Deals",v:kpis.deal_count,c:"#eee"},
+                      {l:"Capital",v:$(kpis.total_invested),c:"#34d399"},
+                      {l:"Lead Rounds",v:kpis.lead_count,c:"#a78bfa"},
+                      {l:"Team Size",v:kpis.team_count,c:"#60a5fa"},
+                      {l:"Portfolio Cos",v:kpis.portfolio_count,c:"#f59e0b"},
+                    ]} />
 
                     {/* Activity line */}
                     {fp.activity.latest_deal_date && <div style={{fontSize:10.5,color:"#555",marginBottom:14}}>
@@ -702,21 +753,7 @@
                       {/* Recent deals preview */}
                       {fp.deals.length > 0 && <div>
                         <div className="kpi-label" style={{marginBottom:6}}>Recent Deals</div>
-                        <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
-                          {["Company","Amount","Stage","Sector","Role","Date"].map(h=>
-                            <th key={h} style={{cursor:"default",textAlign:h==="Amount"?"right":"left"}}>{h}</th>)}
-                        </tr></thead><tbody>
-                          {fp.deals.slice(0,5).map((d,i) =>
-                            <tr key={d.id} className={i%2?"":"stripe"}>
-                              <td><span style={{fontWeight:600,color:"#eee"}}>{d.company_name}</span></td>
-                              <td style={{textAlign:"right"}} className="mono green"><b>{$(d.amount_usd)}</b></td>
-                              <td><Badge t={d.stage} c={SC[d.stage]} /></td>
-                              <td style={{color:CC[d.category],fontSize:11}}>{d.category}</td>
-                              <td><Badge t={d.role==="lead"?"★ Lead":"Co-Inv"} c={d.role==="lead"?"#a78bfa":"#4a4b60"} /></td>
-                              <td className="mono muted" style={{fontSize:10.5}}>{(d.date_announced||"").slice(5)}</td>
-                            </tr>
-                          )}
-                        </tbody></table>
+                        <FirmDealTable deals={fp.deals} limit={5} />
                         {fp.deals.length > 5 && <button className="link" onClick={()=>setFirmSubTab("deals")} style={{fontSize:11,marginTop:6}}>View all {fp.deals.length} deals →</button>}
                       </div>}
 
@@ -760,27 +797,7 @@
                     {/* ── Portfolio sub-tab ── */}
                     {firmSubTab === "portfolio" && <div className="fu">
                       {fp.portfolio.length > 0 ? (
-                        <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
-                          {["Company","Sector","Lead Partner","Website"].map(h=>
-                            <th key={h} style={{cursor:"default"}}>{h}</th>)}
-                        </tr></thead><tbody>
-                          {fp.portfolio.map((c,i) =>
-                            <tr key={c.id||i} className={i%2?"":"stripe"}>
-                              <td><div style={{fontWeight:600,color:"#eee"}}>{c.company_name}</div>
-                                {c.description && <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,maxWidth:300,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.description}</div>}
-                              </td>
-                              <td style={{color:"#777",fontSize:11}}>{c.sector||"—"}</td>
-                              <td style={{color:"#888",fontSize:11}}>{c.lead_partner||"—"}</td>
-                              <td>{c.company_website
-                                ? <a href={c.company_website.startsWith("http")?c.company_website:"https://"+c.company_website} target="_blank" rel="noopener"
-                                    style={{color:"#6366f1",fontSize:11,textDecoration:"none"}}>
-                                    {c.company_website.replace(/https?:\/\/(www\.)?/,"").replace(/\/$/,"").slice(0,30)} ↗
-                                  </a>
-                                : <span className="muted">—</span>}
-                              </td>
-                            </tr>
-                          )}
-                        </tbody></table>
+                        <PortfolioTable companies={fp.portfolio} />
                       ) : (
                         <div style={{color:"#3d3e55",fontSize:12,padding:40,textAlign:"center"}}>
                           No portfolio data — scraper runs Fridays 9 PM EST
@@ -791,23 +808,7 @@
                     {/* ── Deals sub-tab ── */}
                     {firmSubTab === "deals" && <div className="fu">
                       {fp.deals.length > 0 ? (
-                        <table style={{fontSize:12}}><thead><tr style={{borderBottom:"2px solid #191a2e"}}>
-                          {["Company","Amount","Stage","Sector","Role","Date"].map(h=>
-                            <th key={h} style={{cursor:"default",textAlign:h==="Amount"?"right":"left"}}>{h}</th>)}
-                        </tr></thead><tbody>
-                          {fp.deals.map((d,i) =>
-                            <tr key={d.id} className={i%2?"":"stripe"}>
-                              <td><span style={{fontWeight:600,color:"#eee"}}>{d.company_name}</span>
-                                {d.company_description && <div style={{fontSize:10,color:"#4a4b60",marginTop:1}}>{d.company_description}</div>}
-                              </td>
-                              <td style={{textAlign:"right"}} className="mono green"><b>{$(d.amount_usd)}</b></td>
-                              <td><Badge t={d.stage} c={SC[d.stage]} /></td>
-                              <td style={{color:CC[d.category],fontSize:11}}>{d.category}</td>
-                              <td><Badge t={d.role==="lead"?"★ Lead":"Co-Inv"} c={d.role==="lead"?"#a78bfa":"#4a4b60"} /></td>
-                              <td className="mono muted" style={{fontSize:10.5}}>{(d.date_announced||"")}</td>
-                            </tr>
-                          )}
-                        </tbody></table>
+                        <FirmDealTable deals={fp.deals} showDesc fullDate />
                       ) : (
                         <div style={{color:"#3d3e55",fontSize:12,padding:40,textAlign:"center"}}>No deals recorded for this firm</div>
                       )}
@@ -877,10 +878,7 @@
                   return <div className="fu">
                     <h2 style={{fontSize:18,fontWeight:700,color:col,marginBottom:4}}>{c.cat}</h2>
                     <div style={{display:"flex",gap:4,marginBottom:16}}>{Object.entries(c.stages).sort((a,b)=>b[1]-a[1]).map(([s,n])=><Badge key={s} t={`${s}: ${n}`} c={SC[s]} />)}</div>
-                    <div style={{display:"flex",gap:16,marginBottom:18}}>
-                      {[{l:"Deals",v:c.cnt,c:"#eee"},{l:"Capital",v:$(c.cap),c:"#34d399"},{l:"Avg Size",v:$(c.avg),c:"#f59e0b"},{l:"Investors",v:cfl.length,c:"#a78bfa"}].map(k=>
-                        <div key={k.l} className="kpi"><div className="kpi-label">{k.l}</div><div className="kpi-val mono" style={{color:k.c}}>{k.v}</div></div>)}
-                    </div>
+                    <KPIRow items={[{l:"Deals",v:c.cnt,c:"#eee"},{l:"Capital",v:$(c.cap),c:"#34d399"},{l:"Avg Size",v:$(c.avg),c:"#f59e0b"},{l:"Investors",v:cfl.length,c:"#a78bfa"}]} />
                     {cfl.length>0 && <React.Fragment><div className="kpi-label" style={{marginBottom:6}}>Active Investors</div>
                       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:6,marginBottom:16}}>
                         {cfl.map(f=><div key={f.name} className="investor-card" onClick={()=>goFirm(f.name)}>
@@ -1001,33 +999,7 @@
                       <div style={{fontSize:16,fontWeight:700,color:"#eee"}}>{firmName}</div>
                       <div style={{fontSize:11,color:"#555",marginTop:2}}>{filtered.length} portfolio companies</div>
                     </div>}
-                    <table style={{fontSize:12}}>
-                      <thead><tr>
-                        <th style={{cursor:"default"}}>Company</th>
-                        {!selPortFirm && <th style={{cursor:"default"}}>Firm</th>}
-                        <th style={{cursor:"default"}}>Sector</th>
-                        <th style={{cursor:"default"}}>Lead Partner</th>
-                        <th style={{cursor:"default"}}>Website</th>
-                      </tr></thead>
-                      <tbody>
-                        {filtered.map((c, i) =>
-                          <tr key={c.id || i} className={i % 2 === 0 ? "stripe" : ""}>
-                            <td><div style={{fontWeight:600,color:"#eee"}}>{c.company_name}</div>
-                              {c.description && <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,maxWidth:300,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.description}</div>}
-                            </td>
-                            {!selPortFirm && <td><span style={{color:"#a78bfa",fontSize:11.5,fontWeight:500}}>{c.firm_name}</span></td>}
-                            <td style={{color:"#777",fontSize:11}}>{c.sector || "—"}</td>
-                            <td style={{color:"#888",fontSize:11}}>{c.lead_partner || "—"}</td>
-                            <td>{c.company_website && c.company_website !== c.source_url
-                              ? <a href={c.company_website} target="_blank" rel="noopener" style={{color:"#6366f1",fontSize:11,textDecoration:"none"}}>
-                                  {c.company_website.replace(/https?:\/\/(www\.)?/,"").replace(/\/$/,"").slice(0,30)}
-                                </a>
-                              : <span className="muted">—</span>}
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
+                    <PortfolioTable companies={filtered} showFirm={!selPortFirm} />
                     {filtered.length === 0 && <div className="empty" style={{padding:60}}>
                       {portfolio.total === 0
                         ? <div>No portfolio data yet — scraper runs on Fridays at 9 PM EST</div>

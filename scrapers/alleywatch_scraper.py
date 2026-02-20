@@ -32,7 +32,8 @@ from fetcher import fetch, fetch_many
 from scrapers.utils import (
     normalize_stage, parse_amount, classify_sector,
     parse_investors, normalize_company_name, should_skip_deal,
-    validate_deal_amount,
+    validate_deal_amount, parse_pub_date as _parse_pub_date,
+    link_investors_to_deal,
 )
 from scrapers.llm_extract import (
     extract_alleywatch_deals, validate_company_name, clean_company_name,
@@ -42,22 +43,9 @@ from quality_control import validate_deal
 logger = logging.getLogger(__name__)
 
 
-def _parse_pub_date(date_str: str) -> Optional[str]:
-    """Parse RSS pubDate like 'Wed, 12 Feb 2025 08:00:00 GMT' to 'YYYY-MM-DD'."""
-    if not date_str:
-        return None
-    for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z",
-                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(date_str.strip(), fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
-
-
 #  Source 1: AlleyWatch Daily Funding Reports
 
-ALLEYWATCH_DAILY_BASE = "https://www.alleywatch.com/category/funding/"
+from config import ALLEYWATCH_DAILY_BASE
 ALLEYWATCH_DAILY_PATTERN = re.compile(
     r"/\d{4}/\d{2}/the-alleywatch-startup-daily-funding-report"
 )
@@ -552,26 +540,20 @@ def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
 
     deal_id = insert_deal(conn, cleaned.pop("company_name"), **cleaned)
 
-    # Link investors
+    # Link investors via shared utility
     lead_name = deal.get("lead_investor")
+    investor_dicts = []
     for inv_name in deal.get("all_investors", []):
-        firm_row = conn.execute(
-            "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)", (inv_name,)
-        ).fetchone()
-        firm_id = firm_row["id"] if firm_row else None
-
-        inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
-        link_deal_investor(conn, deal_id, inv_id)
-
-        if firm_id:
-            role = "lead" if inv_name == lead_name else "participant"
-            link_deal_firm(conn, deal_id, firm_id, role=role)
-
-        if inv_name == lead_name:
-            conn.execute(
-                "UPDATE deals SET lead_investor_id = ? WHERE id = ?",
-                (inv_id, deal_id)
-            )
+        role = "lead" if inv_name == lead_name else "participant"
+        investor_dicts.append({"name": inv_name, "role": role})
+    if investor_dicts:
+        link_investors_to_deal(
+            conn, deal_id, investor_dicts,
+            upsert_investor_fn=upsert_investor,
+            link_deal_investor_fn=link_deal_investor,
+            upsert_firm_fn=upsert_firm,
+            link_deal_firm_fn=link_deal_firm,
+        )
 
     logger.info(f"  ✓ Inserted: {company} — {deal.get('stage')} — ${amount:,.0f}" if amount else f"  ✓ Inserted: {company} — {deal.get('stage')} — undisclosed")
     return deal_id

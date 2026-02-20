@@ -26,6 +26,9 @@ from scrapers.utils import (
     parse_amount as _parse_amount, normalize_company_name, company_names_match,
     should_skip_deal, validate_deal_amount, classify_stage_from_amount,
     is_duplicate_deal,
+    parse_pub_date as _parse_pub_date,
+    is_nyc_related,
+    link_investors_to_deal,
 )
 from scrapers.llm_extract import (
     extract_deals_batch, validate_company_name, clean_company_name,
@@ -33,19 +36,6 @@ from scrapers.llm_extract import (
 from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_pub_date(date_str: str) -> Optional[str]:
-    """Parse RSS pubDate like 'Wed, 12 Feb 2025 08:00:00 GMT' to 'YYYY-MM-DD'."""
-    if not date_str:
-        return None
-    for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z",
-                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(date_str.strip(), fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
 
 
 # ── Stage Detection (delegates to shared utils) ──────────────
@@ -81,22 +71,6 @@ def detect_category(text: str) -> str:
     """Wrapper around shared classify_sector for backward compat."""
     return _classify_sector(text) or "Other"
 
-
-
-# ── NYC Detection ─────────────────────────────────────────────
-
-NYC_INDICATORS = [
-    "new york", "nyc", "manhattan", "brooklyn", "queens",
-    "bronx", "staten island", "ny-based", "new york-based",
-    "headquartered in new york", "based in nyc", "flatiron",
-    "soho", "tribeca", "midtown", "wall street", "chelsea",
-    "greenpoint", "williamsburg", "dumbo", "fidi",
-]
-
-
-def is_nyc_related(text: str) -> bool:
-    text_lower = text.lower()
-    return any(indicator in text_lower for indicator in NYC_INDICATORS)
 
 
 # ── News Source Scrapers ──────────────────────────────────────
@@ -271,8 +245,7 @@ def scrape_google_news(query: str = "NYC startup funding round 2025",
 
 # ── Google Custom Search API (official, rate-limit-free) ─────
 
-GOOGLE_CSE_API_KEY = os.environ.get("GOOGLE_CSE_API_KEY", "")
-GOOGLE_CSE_CX = os.environ.get("GOOGLE_CSE_CX", "")  # Custom Search Engine ID
+from config import GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX
 
 
 def scrape_google_cse(query: str, max_results: int = 10) -> List[Dict]:
@@ -530,35 +503,14 @@ def extract_investors(text: str) -> List[Dict]:
 # ── Main Pipeline ─────────────────────────────────────────────
 
 def _link_investors(conn, deal_id: int, investors: List[Dict]):
-    """Link investor and firm records to a deal. Shared by all ingestion paths."""
-    lead_investor_id = None
-    for inv_data in investors:
-        inv_name = inv_data["name"]
-        role = inv_data.get("role", "participant")
-
-        firm_row = conn.execute(
-            "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
-            (inv_name,)
-        ).fetchone()
-        firm_id = firm_row["id"] if firm_row else None
-
-        inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
-        link_deal_investor(conn, deal_id, inv_id)
-
-        if firm_id:
-            link_deal_firm(conn, deal_id, firm_id, role)
-        else:
-            new_firm_id = upsert_firm(conn, inv_name, location="Unknown")
-            link_deal_firm(conn, deal_id, new_firm_id, role)
-
-        if role == "lead" and lead_investor_id is None:
-            lead_investor_id = inv_id
-
-    if lead_investor_id:
-        conn.execute(
-            "UPDATE deals SET lead_investor_id = ? WHERE id = ?",
-            (lead_investor_id, deal_id)
-        )
+    """Link investor and firm records to a deal. Delegates to shared utils."""
+    link_investors_to_deal(
+        conn, deal_id, investors,
+        upsert_investor_fn=upsert_investor,
+        link_deal_investor_fn=link_deal_investor,
+        upsert_firm_fn=upsert_firm,
+        link_deal_firm_fn=link_deal_firm,
+    )
 
 
 def process_deal(conn, title: str, url: str, full_text: str,

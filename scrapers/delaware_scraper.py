@@ -28,10 +28,18 @@ from database import (
     log_scrape, finish_scrape
 )
 from fetcher import fetch, SEC_HEADERS
-from news_scraper import detect_category, is_nyc_related, extract_amount, detect_stage
-from scrapers.utils import should_skip_deal
+from scrapers.utils import (
+    should_skip_deal, is_nyc_related, classify_sector,
+    normalize_stage, parse_amount,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_category(text: str) -> str:
+    """Wrapper around classify_sector matching old news_scraper.detect_category."""
+    return classify_sector(text) or "Other"
+
 
 # Browser-like headers for Delaware ICIS (session-based scraping)
 HEADERS = {
@@ -44,8 +52,7 @@ HEADERS = {
 
 # ── Delaware ICIS Entity Search ───────────────────────────────
 
-DELAWARE_ECORP_BASE = "https://icis.corp.delaware.gov/ecorp/entitysearch"
-DELAWARE_ENTITY_SEARCH = "https://icis.corp.delaware.gov/ecorp/entitysearch/namesearch.aspx"
+from config import DELAWARE_ECORP_BASE, DELAWARE_ENTITY_SEARCH
 
 
 def search_delaware_entities(company_name: str) -> List[Dict]:
@@ -559,7 +566,7 @@ def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[in
 
     amount = filing_data.get("offering_amount") or filing_data.get("amount_sold")
     industry = filing_data.get("industry", "")
-    category_name = detect_category(f"{company_name} {industry}")
+    category_name = _detect_category(f"{company_name} {industry}")
 
     # Determine stage from amount
     stage = "Unknown"
@@ -715,9 +722,9 @@ def run_delaware_scraper(days_back: int = 14):
                 if not company_name:
                     continue
 
-                amount = extract_amount(full_text)
-                stage = detect_stage(full_text)
-                category_name = detect_category(full_text)
+                amount = parse_amount(full_text[:500])
+                stage = normalize_stage(full_text)
+                category_name = _detect_category(full_text)
                 investors = extract_investors(full_text)
 
                 # Skip VC firms and deals > $50M

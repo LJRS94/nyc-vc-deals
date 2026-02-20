@@ -12,7 +12,7 @@ V.06 changes:
 import re
 from datetime import datetime
 from functools import lru_cache
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 
 # ── Stage normalization ───────────────────────────────────────
@@ -400,4 +400,75 @@ def parse_investors(text: str) -> Tuple[List[str], Optional[str]]:
         lead = investors[0]
 
     return investors, lead
+
+
+# ── RSS date parsing (shared by news_scraper, alleywatch_scraper) ──
+
+def parse_pub_date(date_str: str) -> Optional[str]:
+    """Parse RSS pubDate like 'Wed, 12 Feb 2025 08:00:00 GMT' to 'YYYY-MM-DD'."""
+    if not date_str:
+        return None
+    for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+# ── NYC detection (shared by news_scraper, delaware_scraper) ────────
+
+NYC_INDICATORS = [
+    "new york", "nyc", "manhattan", "brooklyn", "queens",
+    "bronx", "staten island", "ny-based", "new york-based",
+    "headquartered in new york", "based in nyc", "flatiron",
+    "soho", "tribeca", "midtown", "wall street", "chelsea",
+    "greenpoint", "williamsburg", "dumbo", "fidi",
+]
+
+
+def is_nyc_related(text: str) -> bool:
+    """Return True if text contains NYC location indicators."""
+    text_lower = text.lower()
+    return any(indicator in text_lower for indicator in NYC_INDICATORS)
+
+
+# ── Investor linking (shared by news_scraper, alleywatch_scraper) ───
+
+def link_investors_to_deal(conn, deal_id: int, investors: List[Dict],
+                           upsert_investor_fn, link_deal_investor_fn,
+                           upsert_firm_fn, link_deal_firm_fn):
+    """
+    Link investor and firm records to a deal.
+    Accepts DB helper functions to avoid importing database at module level.
+    """
+    lead_investor_id = None
+    for inv_data in investors:
+        inv_name = inv_data["name"]
+        role = inv_data.get("role", "participant")
+
+        firm_row = conn.execute(
+            "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
+            (inv_name,)
+        ).fetchone()
+        firm_id = firm_row["id"] if firm_row else None
+
+        inv_id = upsert_investor_fn(conn, name=inv_name, firm_id=firm_id)
+        link_deal_investor_fn(conn, deal_id, inv_id)
+
+        if firm_id:
+            link_deal_firm_fn(conn, deal_id, firm_id, role)
+        else:
+            new_firm_id = upsert_firm_fn(conn, inv_name, location="Unknown")
+            link_deal_firm_fn(conn, deal_id, new_firm_id, role)
+
+        if role == "lead" and lead_investor_id is None:
+            lead_investor_id = inv_id
+
+    if lead_investor_id:
+        conn.execute(
+            "UPDATE deals SET lead_investor_id = ? WHERE id = ?",
+            (lead_investor_id, deal_id)
+        )
 
