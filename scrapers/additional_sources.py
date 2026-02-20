@@ -39,6 +39,7 @@ from scrapers.utils import (
     normalize_company_name, classify_sector, classify_stage_from_amount,
     normalize_stage, parse_amount, should_skip_deal, validate_deal_amount,
 )
+from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
         stats["found"] = len(all_companies)
         logger.info(f"[OpenCorporates] Collected {stats['found']} companies total")
 
-        # Insert deals
+        # Insert deals (via quality gate)
         with batch_connection() as conn:
             for company in all_companies:
                 try:
@@ -178,32 +179,19 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
                     if not name:
                         continue
 
-                    # Filter out non-startup entities
+                    # Source-specific filter: non-startup entity types
                     if not _looks_like_startup(name):
-                        stats["skipped"] += 1
-                        continue
-
-                    # Dedup
-                    norm = normalize_company_name(name)
-                    if norm in existing_names:
-                        stats["skipped"] += 1
-                        continue
-
-                    # Skip known VC firms
-                    skip = should_skip_deal(conn, name)
-                    if skip:
                         stats["skipped"] += 1
                         continue
 
                     inc_date = company.get("incorporation_date")
                     oc_url = company.get("opencorporates_url", "")
 
-                    deal_id = insert_deal(
+                    accepted, reason, cleaned = validate_deal(
                         conn, name,
                         date_announced=inc_date,
                         source_url=oc_url,
                         source_type="other",
-                        confidence_score=0.3,
                         raw_text=json.dumps({
                             "company_number": company.get("company_number"),
                             "jurisdiction": company.get("jurisdiction_code"),
@@ -212,10 +200,16 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
                             "source": "opencorporates",
                         })[:2000],
                     )
+                    if not accepted:
+                        stats["skipped"] += 1
+                        continue
+
+                    deal_kwargs = {k: v for k, v in cleaned.items() if k != "company_name"}
+                    deal_id = insert_deal(conn, cleaned["company_name"], **deal_kwargs)
 
                     if deal_id:
                         stats["new"] += 1
-                        existing_names.add(norm)
+                        existing_names.add(normalize_company_name(name))
 
                 except Exception as e:
                     logger.debug(f"[OpenCorporates] Failed to insert '{name}': {e}")
@@ -336,7 +330,7 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
         stats["found"] = len(all_rounds)
         logger.info(f"[Crunchbase] Collected {stats['found']} funding rounds total")
 
-        # Insert deals
+        # Insert deals (via quality gate)
         with batch_connection() as conn:
             for props in all_rounds:
                 try:
@@ -352,37 +346,19 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
                     if not company_name:
                         continue
 
-                    # Dedup
-                    norm = normalize_company_name(company_name)
-                    if norm in existing_names:
-                        stats["skipped"] += 1
-                        continue
-
-                    # Skip VC firms
-                    skip = should_skip_deal(conn, company_name)
-                    if skip:
-                        stats["skipped"] += 1
-                        continue
-
                     # Extract amount
                     money_raised = props.get("money_raised", {})
                     if isinstance(money_raised, dict):
                         amount = money_raised.get("value")
                         currency = money_raised.get("currency", "USD")
                         if currency != "USD":
-                            amount = None  # Only track USD
+                            amount = None
                     else:
                         amount = parse_amount(str(money_raised)) if money_raised else None
 
-                    # Extract stage
+                    # Extract stage from Crunchbase investment type
                     investment_type = props.get("investment_type") or props.get("funding_type") or ""
                     stage = normalize_stage(investment_type)
-                    if stage == "Unknown" and amount:
-                        stage = classify_stage_from_amount(amount)
-
-                    # Validate amount
-                    if amount and not validate_deal_amount(amount, stage):
-                        amount = None
 
                     # Extract description
                     description = props.get("short_description") or props.get("description") or ""
@@ -411,6 +387,7 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
                     cat_id = get_category_id(conn, category_name) if category_name else None
 
                     # Crunchbase permalink for source URL
+                    norm = normalize_company_name(company_name)
                     permalink = props.get("permalink") or props.get("cb_url") or ""
                     source_url = (
                         f"https://www.crunchbase.com/funding_round/{permalink}"
@@ -418,19 +395,23 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
                         else permalink
                     ) or f"https://www.crunchbase.com/organization/{norm}"
 
-                    deal_id = insert_deal(
+                    accepted, reason, cleaned = validate_deal(
                         conn, company_name,
-                        company_description=description or None,
                         stage=stage,
-                        amount_usd=amount,
-                        amount_disclosed=1 if amount else 0,
+                        amount=amount,
                         date_announced=announced_on or None,
-                        source_url=source_url,
                         source_type="crunchbase",
-                        category_id=cat_id,
-                        confidence_score=0.9,
+                        description=description or None,
                         raw_text=json.dumps(props, default=str)[:2000],
+                        source_url=source_url,
+                        category_id=cat_id,
                     )
+                    if not accepted:
+                        stats["skipped"] += 1
+                        continue
+
+                    deal_kwargs = {k: v for k, v in cleaned.items() if k != "company_name"}
+                    deal_id = insert_deal(conn, cleaned["company_name"], **deal_kwargs)
 
                     if deal_id:
                         stats["new"] += 1
@@ -523,17 +504,8 @@ def run_ny_dos_scraper(days_back: int = 90) -> dict:
         if not name:
             continue
 
+        # Source-specific filter: non-startup entity types
         if not _looks_like_startup(name):
-            stats["skipped"] += 1
-            continue
-
-        norm = normalize_company_name(name)
-        if norm in existing:
-            stats["skipped"] += 1
-            continue
-
-        # Skip names that are clearly not startups
-        if should_skip_deal(conn, name, None):
             stats["skipped"] += 1
             continue
 
@@ -551,24 +523,27 @@ def run_ny_dos_scraper(days_back: int = 90) -> dict:
         cat_id = get_category_id(conn, category_name)
 
         try:
-            deal_id = insert_deal(
+            accepted, reason, cleaned = validate_deal(
                 conn, name,
-                stage="Unknown",
                 source_type="ny_dos",
                 source_url=f"https://data.ny.gov/resource/n9v6-gdp6?dos_process_name={name}",
                 date_announced=filing_date,
-                category_id=cat_id,
                 raw_text=f"NY DOS filing: {name}, formed {filing_date}, county: {county}",
-                confidence_score=0.25,
+                category_id=cat_id,
             )
+            if not accepted:
+                stats["skipped"] += 1
+                continue
+
+            deal_kwargs = {k: v for k, v in cleaned.items() if k != "company_name"}
+            deal_id = insert_deal(conn, cleaned["company_name"], **deal_kwargs)
             if deal_id:
-                existing.add(norm)
+                existing.add(normalize_company_name(name))
                 stats["new"] += 1
         except Exception as e:
             logger.debug(f"[NY DOS] Insert failed for {name}: {e}")
             stats["errors"] += 1
 
-    conn.close()
     logger.info(f"[NY DOS] Done: {stats['new']} new, {stats['skipped']} skipped")
     return stats
 
@@ -643,7 +618,7 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
         stats["found"] = len(all_awards)
         logger.info(f"[SBIR] Found {stats['found']} NY awards in last {days_back} days")
 
-        # Insert deals
+        # Insert deals (via quality gate)
         with batch_connection() as bconn:
             for award in all_awards:
                 try:
@@ -654,17 +629,6 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                     if not company_name:
                         continue
 
-                    # Dedup
-                    norm = normalize_company_name(company_name)
-                    if norm in existing_names:
-                        stats["skipped"] += 1
-                        continue
-
-                    # Skip known VC firms
-                    if should_skip_deal(bconn, company_name):
-                        stats["skipped"] += 1
-                        continue
-
                     # Extract amount
                     amount = None
                     raw_amount = (award.get("Award Amount") or award.get("Amount") or "").strip()
@@ -673,12 +637,6 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                             amount = float(raw_amount.replace(",", "").replace("$", ""))
                         except (ValueError, TypeError):
                             pass
-
-                    # Stage from amount
-                    stage = classify_stage_from_amount(amount) if amount else "Unknown"
-                    if amount and not validate_deal_amount(amount, stage):
-                        amount = None
-                        stage = "Unknown"
 
                     # Description
                     abstract = (
@@ -708,17 +666,12 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                         if sbir_id else "https://www.sbir.gov"
                     )
 
-                    deal_id = insert_deal(
+                    accepted, reason, cleaned = validate_deal(
                         bconn, company_name,
-                        company_description=description,
-                        stage=stage,
-                        amount_usd=amount,
-                        amount_disclosed=1 if amount else 0,
+                        amount=amount,
                         date_announced=date_announced[:10] if date_announced else None,
-                        source_url=source_url,
                         source_type="other",
-                        category_id=cat_id,
-                        confidence_score=0.8,
+                        description=description,
                         raw_text=json.dumps({
                             "agency": agency,
                             "program": program,
@@ -727,11 +680,19 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                             "state": "NY",
                             "source": "sbir_gov_csv",
                         })[:2000],
+                        source_url=source_url,
+                        category_id=cat_id,
                     )
+                    if not accepted:
+                        stats["skipped"] += 1
+                        continue
+
+                    deal_kwargs = {k: v for k, v in cleaned.items() if k != "company_name"}
+                    deal_id = insert_deal(bconn, cleaned["company_name"], **deal_kwargs)
 
                     if deal_id:
                         stats["new"] += 1
-                        existing_names.add(norm)
+                        existing_names.add(normalize_company_name(company_name))
 
                         if agency:
                             upsert_deal_metadata(bconn, deal_id, "sbir_agency", agency)

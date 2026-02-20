@@ -33,7 +33,6 @@ def get_stats():
         "SELECT source_type, COUNT(*) as cnt FROM deals GROUP BY source_type"
     ).fetchall():
         stats["source_breakdown"][row["source_type"]] = row["cnt"]
-    conn.close()
     return jsonify(stats)
 
 
@@ -150,7 +149,6 @@ def get_deals():
             "investors": investors_by_deal.get(deal_id, []),
         })
 
-    conn.close()
     return jsonify({
         "deals": deals,
         "total": total,
@@ -170,7 +168,6 @@ def deals_by_stage():
         FROM deals
         GROUP BY stage ORDER BY count DESC
     """).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -184,7 +181,6 @@ def deals_by_category():
         JOIN categories c ON d.category_id = c.id
         GROUP BY c.name ORDER BY count DESC
     """).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -200,7 +196,6 @@ def deals_by_month():
         WHERE date_announced IS NOT NULL
         GROUP BY month ORDER BY month
     """).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -215,7 +210,6 @@ def deals_by_source():
         FROM deals
         GROUP BY source_type ORDER BY count DESC
     """).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -247,7 +241,6 @@ def deals_de_incorporated():
            OR raw_text LIKE '%Delaware%'
     """).fetchone()[0]
 
-    conn.close()
     return jsonify({
         "deals": [dict(r) for r in rows],
         "total": total,
@@ -283,7 +276,6 @@ def deals_velocity():
             "count_trend": round((cur_count - prev_count) / max(prev_count, 1) * 100),
             "capital_trend": round((cur_cap - prev_cap) / max(prev_cap, 1) * 100),
         }
-    conn.close()
     return jsonify(periods)
 
 
@@ -319,7 +311,6 @@ def deals_followons():
             "round_count": r["round_count"],
             "rounds": rounds,
         })
-    conn.close()
     return jsonify(followons)
 
 
@@ -329,7 +320,6 @@ def deals_completeness():
     conn = get_connection()
     total = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
     if total == 0:
-        conn.close()
         return jsonify({"total": 0, "fields": {}})
     fields = {}
     for col, label in [
@@ -346,7 +336,6 @@ def deals_completeness():
         "SELECT COUNT(DISTINCT deal_id) FROM deal_firms"
     ).fetchone()[0]
     fields["investors"] = {"filled": with_inv, "pct": round(with_inv / total * 100)}
-    conn.close()
     return jsonify({"total": total, "fields": fields})
 
 
@@ -368,7 +357,6 @@ def firms_coinvestors():
         ORDER BY shared_deals DESC
         LIMIT 50
     """).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -376,5 +364,4 @@ def firms_coinvestors():
 def get_categories():
     conn = get_connection()
     rows = conn.execute("SELECT * FROM categories ORDER BY name").fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])

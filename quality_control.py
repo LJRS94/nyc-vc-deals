@@ -18,6 +18,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 
+from config import MAX_COMPANY_NAME_LENGTH, DEDUP_DATE_GAP_DAYS
 from scrapers.utils import (
     normalize_company_name, normalize_stage, classify_stage_from_amount,
     validate_deal_amount, is_duplicate_deal, company_names_match,
@@ -148,8 +149,8 @@ def validate_deal(conn, company_name: str, stage: str = "Unknown",
         _log_rejection(conn, company_name, "bad_name_empty", source_type, raw_text)
         return False, "empty_name", {}
 
-    # Length check (tightened from 60 to 45)
-    if len(company_name) > 45:
+    # Length check
+    if len(company_name) > MAX_COMPANY_NAME_LENGTH:
         _log_rejection(conn, company_name, "bad_name_too_long", source_type, raw_text)
         return False, "name_too_long", {}
 
@@ -335,7 +336,7 @@ def run_audit(conn) -> Dict:
         name = row[1]
         if not validate_company_name(name):
             issues["bad_names"].append({"id": row[0], "name": name})
-        elif len(name) > 45:
+        elif len(name) > MAX_COMPANY_NAME_LENGTH:
             issues["bad_names"].append({"id": row[0], "name": name, "reason": "too_long"})
 
     # 3. Stage vs amount mismatches
@@ -453,7 +454,7 @@ def merge_cross_source_duplicates(conn) -> int:
             from datetime import datetime as dt
             try:
                 parsed = sorted(dt.strptime(d, "%Y-%m-%d") for d in date_vals)
-                if (parsed[-1] - parsed[0]).days > 180:
+                if (parsed[-1] - parsed[0]).days > DEDUP_DATE_GAP_DAYS:
                     continue  # too far apart — likely different rounds
             except (ValueError, TypeError):
                 continue  # unparseable dates — skip merge to be safe

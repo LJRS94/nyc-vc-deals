@@ -12,8 +12,11 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session
 from flask_cors import CORS
 
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import SECRET_KEY, API_PORT, API_HOST
+from config import SECRET_KEY, API_PORT, API_HOST, STARTUP_SCRAPE_DELAY, STARTUP_PORTFOLIO_DELAY
 from database import (
     get_connection, init_db, create_user, get_user_by_username,
     get_user_preferences, set_user_preferences,
@@ -46,6 +49,21 @@ app.register_blueprint(feed_bp)
 app.register_blueprint(qc_bp)
 
 
+# ── Global JSON error handlers ──
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    logger.error(f"Internal server error: {e}")
+    return jsonify({"error": "Internal server error"}), 500
+
+@app.errorhandler(400)
+def bad_request(e):
+    return jsonify({"error": str(e)}), 400
+
+
 def login_required(f):
     """Decorator — returns 401 if no valid session. Only for new endpoints."""
     @wraps(f)
@@ -76,13 +94,10 @@ def auth_register():
     if len(password) < 4:
         return jsonify({"error": "Password must be at least 4 characters"}), 400
     conn = get_connection()
-    try:
-        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-        if existing:
-            return jsonify({"error": "Username already taken"}), 409
-        user = create_user(conn, username, generate_password_hash(password), display_name)
-    finally:
-        conn.close()
+    existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if existing:
+        return jsonify({"error": "Username already taken"}), 409
+    user = create_user(conn, username, generate_password_hash(password), display_name)
     session["user_id"] = user["id"]
     session["user_name"] = user["display_name"]
     return jsonify({"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user["display_name"]}})
@@ -96,10 +111,7 @@ def auth_login():
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
     conn = get_connection()
-    try:
-        user = get_user_by_username(conn, username)
-    finally:
-        conn.close()
+    user = get_user_by_username(conn, username)
     if not user or not check_password_hash(user["password_hash"], password):
         return jsonify({"error": "Invalid username or password"}), 401
     session["user_id"] = user["id"]
@@ -131,7 +143,6 @@ def api_me():
 def api_get_preferences():
     conn = get_connection()
     prefs = get_user_preferences(conn, session["user_id"])
-    conn.close()
     return jsonify(prefs)
 
 
@@ -141,7 +152,6 @@ def api_set_preferences():
     data = request.get_json(force=True)
     conn = get_connection()
     set_user_preferences(conn, session["user_id"], data)
-    conn.close()
     return jsonify({"ok": True})
 
 
@@ -153,7 +163,6 @@ def api_get_saved():
     folder = request.args.get("folder")
     conn = get_connection()
     deals = get_saved_deals(conn, session["user_id"], folder)
-    conn.close()
     return jsonify({"deals": deals})
 
 
@@ -168,7 +177,6 @@ def api_save_deal():
     row_id = save_deal(conn, session["user_id"], deal_id,
                        folder=data.get("folder", "Default"),
                        notes=data.get("notes"))
-    conn.close()
     return jsonify({"ok": True, "id": row_id})
 
 
@@ -180,7 +188,6 @@ def api_update_saved(deal_id):
     update_saved_deal(conn, session["user_id"], deal_id,
                       folder=data.get("folder"),
                       notes=data.get("notes"))
-    conn.close()
     return jsonify({"ok": True})
 
 
@@ -189,7 +196,6 @@ def api_update_saved(deal_id):
 def api_unsave_deal(deal_id):
     conn = get_connection()
     unsave_deal(conn, session["user_id"], deal_id)
-    conn.close()
     return jsonify({"ok": True})
 
 
@@ -198,7 +204,6 @@ def api_unsave_deal(deal_id):
 def api_saved_folders():
     conn = get_connection()
     folders = get_saved_folders(conn, session["user_id"])
-    conn.close()
     return jsonify({"folders": folders})
 
 
@@ -207,7 +212,6 @@ def api_saved_folders():
 def api_saved_ids():
     conn = get_connection()
     ids = get_saved_deal_ids(conn, session["user_id"])
-    conn.close()
     return jsonify({"ids": ids})
 
 
@@ -347,7 +351,7 @@ def _start_scheduler():
     import time
 
     def deals_scheduler():
-        time.sleep(60)
+        time.sleep(STARTUP_SCRAPE_DELAY)
         _run_scrape_background()
 
         while True:
@@ -365,7 +369,7 @@ def _start_scheduler():
             _run_scrape_background()
 
     def portfolio_scheduler():
-        time.sleep(120)
+        time.sleep(STARTUP_PORTFOLIO_DELAY)
         _run_portfolio_scrape()
 
         while True:
@@ -390,11 +394,11 @@ def _start_scheduler():
 
 
 @app.route("/api/scrape", methods=["POST"])
+@login_required
 def trigger_scrape():
-    """Manually trigger a background scrape."""
-    if not _scrape_lock.acquire(blocking=False):
+    """Manually trigger a background scrape (requires login)."""
+    if _scrape_status["running"]:
         return jsonify({"status": "already_running", **_scrape_status}), 409
-    _scrape_lock.release()
     threading.Thread(target=_run_scrape_background, daemon=True).start()
     return jsonify({"status": "started", "message": "Scrape started in background"})
 
@@ -404,7 +408,6 @@ def scrape_status():
     """Check the status of background scraping."""
     conn = get_connection()
     deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
-    conn.close()
     return jsonify({**_scrape_status, "total_deals": deal_count})
 
 

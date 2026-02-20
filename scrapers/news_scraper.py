@@ -84,6 +84,7 @@ FUNDING_KEYWORDS = [
 # ── Publication RSS Feeds ─────────────────────────────────────
 
 PUBLICATION_FEEDS = [
+    ("AlleyWatch", "https://www.alleywatch.com/feed/"),
     ("TechCrunch Fundings & Exits", "https://techcrunch.com/fundings-exits/feed/"),
     ("TechCrunch Venture", "https://techcrunch.com/category/venture/feed/"),
     ("TechCrunch Funding", "https://techcrunch.com/tag/funding/feed/"),
@@ -247,7 +248,7 @@ def scrape_google_news(query: str = "NYC startup funding round 2025",
 
 # ── Google Custom Search API (official, rate-limit-free) ─────
 
-from config import GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX
+from config import GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX, GOOGLE_BATCH_SIZE, GOOGLE_BATCH_DAYS_BACK
 
 
 def scrape_google_cse(query: str, max_results: int = 10) -> List[Dict]:
@@ -457,22 +458,85 @@ def extract_company_name(title: str) -> Optional[str]:
 
 # ── Investor Extraction ───────────────────────────────────────
 
+_INVESTOR_JUNK_RE = re.compile(
+    r"(?:^|\b)(?:existing|earlier|returning|previous|new|other|including|"
+    r"as\s+well\s+as|a\s+swath|has\s+developed|wants\s+to|co-founder|"
+    r"founder\s+of|backers?|investors?|heavy\s+hitters|fundraise|"
+    r"million|billion|which\s+|who\s+|that\s+|the\s+company|accelerates)",
+    re.I,
+)
+
+
+def _clean_investor_name(name: str) -> str:
+    """Strip common prefixes/suffixes that leak into investor names from article text."""
+    if not name:
+        return ""
+    name = name.strip().rstrip(".;,")
+    # Strip leading qualifiers: "existing investors X" → "X"
+    name = re.sub(
+        r"^(?:existing|earlier|returning|previous|new|other)\s+"
+        r"(?:investors?|backers?)\s+",
+        "", name, flags=re.I,
+    ).strip()
+    # Strip "as well as new investor X" → "X"
+    name = re.sub(r"^as\s+well\s+as\s+(?:new\s+)?(?:investor\s+)?", "", name, flags=re.I).strip()
+    # Strip "-based" prefixes: "New York-based X" → "X"
+    name = re.sub(r"^[\w\s]+-based\s+", "", name, flags=re.I).strip()
+    # Strip "X's VC arm Y" → "Y"
+    name = re.sub(r"^.+?'s\s+(?:VC|venture)\s+arm\s+", "", name, flags=re.I).strip()
+    return name
+
+
+def _is_valid_investor_name(name: str) -> bool:
+    """Reject names that look like sentence fragments, not investor/firm names."""
+    if not name or len(name) < 2 or len(name) > 45:
+        return False
+    if _INVESTOR_JUNK_RE.search(name):
+        return False
+    # Must start with uppercase or digit
+    if name[0].islower():
+        return False
+    # Reject if more than 5 words (likely a sentence fragment)
+    words = name.split()
+    if len(words) > 5:
+        return False
+    # Reject if contains filler/verb words (not normal in firm names)
+    _filler = {"to", "the", "a", "an", "is", "are", "was", "were", "has", "have",
+               "into", "from", "which", "who", "that", "this", "its", "their"}
+    if any(w.lower() in _filler for w in words):
+        return False
+    return True
+
+
 def extract_investors(text: str) -> List[Dict]:
     """
     Extract investor names from article text.
     Looks for patterns like "led by X", "with participation from X, Y, and Z"
     """
     investors = []
+    seen = set()
     text_str = text
 
-    # "led by" pattern
+    def _add(name, role):
+        name = _clean_investor_name(name)
+        if _is_valid_investor_name(name) and name.lower() not in seen:
+            seen.add(name.lower())
+            investors.append({"name": name, "role": role})
+
+    # Split helper: handles Oxford comma (", and") as single delimiter
+    def _split_names(text):
+        return re.split(r",\s*(?:and\s+)?|\s+and\s+", text)
+
+    # "led by" pattern (\b word boundaries prevent matching "and" inside "expand")
     lead_match = re.search(
-        r"led\s+by\s+([A-Z][A-Za-z\s&\.\-]+?)(?:\s*(?:,|and|with|\.|$))",
+        r"led\s+by\s+([A-Z][A-Za-z\s&,\.\-]+?)(?:\s*(?:\bwith\b|\bwhich\b|\bwho\b|\.|$))",
         text_str
     )
     if lead_match:
-        lead_name = lead_match.group(1).strip().rstrip(".")
-        investors.append({"name": lead_name, "role": "lead"})
+        # Lead text may contain multiple investors: "led by X, Y, and Z"
+        parts = _split_names(lead_match.group(1))
+        for i, p in enumerate(parts):
+            _add(p, "lead" if i == 0 else "participant")
 
     # "with participation from" pattern
     part_match = re.search(
@@ -480,24 +544,16 @@ def extract_investors(text: str) -> List[Dict]:
         text_str, re.I
     )
     if part_match:
-        participant_text = part_match.group(1)
-        # Split on commas and "and"
-        parts = re.split(r",\s*|\s+and\s+", participant_text)
-        for p in parts:
-            name = p.strip().rstrip(".")
-            if name and len(name) > 2 and len(name) < 80:
-                investors.append({"name": name, "role": "participant"})
+        for p in _split_names(part_match.group(1)):
+            _add(p, "participant")
 
     # "backed by" pattern
     backed_match = re.search(
         r"backed\s+by\s+(.+?)(?:\.|$)", text_str, re.I
     )
     if backed_match and not investors:
-        parts = re.split(r",\s*|\s+and\s+", backed_match.group(1))
-        for p in parts:
-            name = p.strip().rstrip(".")
-            if name and len(name) > 2 and len(name) < 80:
-                investors.append({"name": name, "role": "participant"})
+        for p in _split_names(backed_match.group(1)):
+            _add(p, "participant")
 
     return investors
 
@@ -949,7 +1005,7 @@ def run_news_scraper(days_back: int = 14):
 BATCH_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".google_batch_state.json")
 
 
-def run_google_batch(batch_size: int = 15, days_back: int = 450):
+def run_google_batch(batch_size: int = GOOGLE_BATCH_SIZE, days_back: int = GOOGLE_BATCH_DAYS_BACK):
     """
     Run a small batch of Google News queries — designed for staggered cron usage.
     Tracks which queries have been completed so subsequent calls pick up where we left off.

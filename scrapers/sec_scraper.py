@@ -61,6 +61,10 @@ _ENTITY_BLOCKLIST = re.compile(
       | Trust              # trust
       | SPV                # Special Purpose Vehicle
       | PLC(?:/ADR)?       # PLC, PLC/ADR
+      | /ADR               # American Depositary Receipts (public companies)
+      | SCSp               # Luxembourg special limited partnership
+      | SARL               # Luxembourg private limited company
+      | SCA                # Partnership limited by shares
       | EB[\s-]?5          # EB-5 immigrant investor funds
     )
     (?:\s|$|[.,])          # word boundary / end
@@ -86,12 +90,16 @@ _ENTITY_KEYWORD_BLOCKLIST = re.compile(
       | \bMaster\s+Fund\b
       | \bInvestment\s+Fund\b
       | \bPooled\s+Investment\b
+      | \bInsurance\b
+      | \bAnnuity\b
+      | \bDiocese\b
+      | \bGrowth\s+Strategy\b
     )
     """,
 )
 
-# Names that start with a street address (e.g. "130 Graham Funding L.P.")
-_ADDRESS_NAME_RE = re.compile(r"^\d+\s+[A-Za-z]")
+# Names that start with a street address (e.g. "130 Graham Funding L.P.", "102-43 Corona Ave")
+_ADDRESS_NAME_RE = re.compile(r"^\d+[-\d]*\s+\w")
 
 # CIK suffix appended by EDGAR (e.g. "Acme Inc (CIK 0002012881)")
 _CIK_SUFFIX_RE = re.compile(r"\s*\(CIK\s*\d+\)\s*$", re.I)
@@ -124,6 +132,9 @@ def _is_junk_sec_company(name: str) -> bool:
         return True
     if _ENTITY_KEYWORD_BLOCKLIST.search(n):
         return True
+    # ADR suffix (public company depositary receipts, not startups)
+    if n.upper().endswith("/ADR") or n.upper().endswith(" ADR"):
+        return True
     return False
 
 
@@ -153,7 +164,20 @@ def _should_keep_sec_filing(company_name: str, details: Optional[Dict], conn) ->
         logger.debug(f"Skipping invalid amount {amount}: {company_name}")
         return False
 
-    # 4. VC firm check — reject if the "company" is actually a known VC firm
+    # 4. Minimum enrichment — reject if we got zero useful data from the Form D XML
+    if details:
+        has_amount = bool(details.get("amount_sold") or details.get("total_offering"))
+        has_industry = bool((details.get("industry") or "").strip())
+        has_investors = bool(details.get("investors_count"))
+        if not has_amount and not has_industry and not has_investors:
+            logger.debug(f"Skipping no-data filing: {company_name}")
+            return False
+    else:
+        # No XML details at all — too thin to be useful
+        logger.debug(f"Skipping unenriched filing: {company_name}")
+        return False
+
+    # 5. VC firm check — reject if the "company" is actually a known VC firm
     skip_reason = should_skip_deal(conn, company_name)
     if skip_reason:
         logger.debug(f"Skipping: {skip_reason}")

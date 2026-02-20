@@ -25,9 +25,11 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+from config import DEFAULT_CACHE_TTL, NEWS_CACHE_TTL, REQUEST_TIMEOUT, FETCH_MAX_WORKERS
+
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".http_cache")
-DEFAULT_TTL = 86400  # 24 hours
-NEWS_TTL = 86400 * 7  # 7 days — for news/RSS queries
+DEFAULT_TTL = DEFAULT_CACHE_TTL
+NEWS_TTL = NEWS_CACHE_TTL
 MAX_RETRIES = 3
 BACKOFF_BASE = 1.5  # seconds
 
@@ -130,7 +132,7 @@ class CachedResponse:
 
 
 def fetch(url: str, headers: Optional[dict] = None, params: Optional[dict] = None,
-          timeout: int = 15, ttl: int = DEFAULT_TTL, method: str = "GET",
+          timeout: int = REQUEST_TIMEOUT, ttl: int = DEFAULT_TTL, method: str = "GET",
           data: Optional[dict] = None, retries: int = MAX_RETRIES) -> CachedResponse:
     """
     Fetch URL with disk caching and retry with exponential backoff.
@@ -205,12 +207,10 @@ def fetch(url: str, headers: Optional[dict] = None, params: Optional[dict] = Non
                 time.sleep(wait)
             else:
                 logger.warning(f"[fetch failed] {url} after {retries} attempts: {e}")
-                # Cache the failure so we don't re-try on next scrape run
-                _write_cache(key, b"", 0, "")
                 return CachedResponse(b"", 0, "")
 
 
-def fetch_many(urls: List[str], max_workers: int = 8, **kwargs) -> List[Tuple[str, CachedResponse]]:
+def fetch_many(urls: List[str], max_workers: int = FETCH_MAX_WORKERS, **kwargs) -> List[Tuple[str, CachedResponse]]:
     """
     Fetch multiple URLs concurrently.
     Returns list of (url, response) tuples in completion order.

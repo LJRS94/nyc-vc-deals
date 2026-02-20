@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 _client = None
 _client_checked = False
 
-MODEL = "claude-haiku-4-5-20251001"
+from config import LLM_MODEL, LLM_MAX_TEXT_LENGTH
+MODEL = LLM_MODEL
 
 
 def _get_client():
@@ -77,7 +78,7 @@ def extract_deal_from_text(title: str, text: str) -> Optional[Dict]:
         return None
 
     # Truncate text to avoid excessive token usage
-    truncated = text[:4000] if len(text) > 4000 else text
+    truncated = text[:LLM_MAX_TEXT_LENGTH] if len(text) > LLM_MAX_TEXT_LENGTH else text
     user_msg = f"Title: {title}\n\nArticle text:\n{truncated}"
 
     try:
@@ -174,12 +175,12 @@ def extract_alleywatch_deals(page_text: str) -> Optional[List[Dict]]:
     if not client:
         return None
 
-    truncated = page_text[:8000] if len(page_text) > 8000 else page_text
+    truncated = page_text[:12000] if len(page_text) > 12000 else page_text
 
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=2000,
+            max_tokens=4000,
             messages=[
                 {"role": "user", "content": f"AlleyWatch funding report:\n\n{truncated}"}
             ],

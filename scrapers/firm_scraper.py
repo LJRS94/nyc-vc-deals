@@ -825,9 +825,10 @@ def run_portfolio_scraper():
     total_new = 0
 
     try:
-        # Get all firms with portfolio URLs
+        # Get all firms with portfolio URLs, skip firms with consecutive failures
         firms = conn.execute(
-            "SELECT id, name, portfolio_url FROM firms WHERE portfolio_url IS NOT NULL"
+            "SELECT id, name, portfolio_url, consecutive_failures FROM firms "
+            "WHERE portfolio_url IS NOT NULL AND COALESCE(consecutive_failures, 0) < 3"
         ).fetchall()
 
         for firm in firms:
@@ -839,6 +840,22 @@ def run_portfolio_scraper():
                 continue
 
             companies = scrape_firm_portfolio(firm_name, portfolio_url)
+
+            # Track success/failure for skipping dead websites
+            if not companies:
+                conn.execute(
+                    "UPDATE firms SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE id = ?",
+                    (firm_id,))
+            else:
+                conn.execute(
+                    "UPDATE firms SET consecutive_failures = 0, last_scraped_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (firm_id,))
+
+            # Cap at 200 portfolio companies per firm to avoid nav-link pollution
+            if len(companies) > 200:
+                logger.warning(f"[{firm_name}] Capping {len(companies)} companies to 200")
+                companies = companies[:200]
+
             total_found += len(companies)
 
             for co in companies:
@@ -880,7 +897,9 @@ def run_firm_scraper():
     total_new = 0
 
     try:
-        firms = conn.execute("SELECT * FROM firms").fetchall()
+        firms = conn.execute(
+            "SELECT * FROM firms WHERE COALESCE(consecutive_failures, 0) < 3"
+        ).fetchall()
         for firm in firms:
             firm_name = firm["name"]
             portfolio_url = firm["portfolio_url"]
@@ -889,6 +908,22 @@ def run_firm_scraper():
             # Scrape portfolio page and store in portfolio_companies table
             if portfolio_url:
                 companies = scrape_firm_portfolio(firm_name, portfolio_url)
+
+                # Track failures to skip dead websites next run
+                if not companies and website:
+                    conn.execute(
+                        "UPDATE firms SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE id = ?",
+                        (firm["id"],))
+                elif companies:
+                    conn.execute(
+                        "UPDATE firms SET consecutive_failures = 0, last_scraped_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (firm["id"],))
+
+                # Cap per-firm to avoid nav-link pollution
+                if len(companies) > 200:
+                    logger.warning(f"[{firm_name}] Capping {len(companies)} companies to 200")
+                    companies = companies[:200]
+
                 total_found += len(companies)
                 for co in companies:
                     kwargs = {}

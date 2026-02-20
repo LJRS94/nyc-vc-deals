@@ -104,7 +104,6 @@ def get_deal_feed():
             except Exception:
                 pass
 
-    conn.close()
     return jsonify({
         "deals": deals,
         "summary": {
@@ -134,7 +133,6 @@ def get_deal_timeline():
         GROUP BY d.date_announced
         ORDER BY d.date_announced ASC
     """, (f"-{days} days",)).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -160,7 +158,6 @@ def get_feed_top_investors():
         ORDER BY deal_count DESC, total_deployed DESC
         LIMIT ?
     """, (f"-{days} days", TOP_INVESTORS_LIMIT)).fetchall()
-    conn.close()
     return jsonify([{
         **dict(r),
         "companies": [x for x in (r["companies"] or "").split(",") if x]

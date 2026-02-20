@@ -30,7 +30,6 @@ def get_firms():
     sql += " GROUP BY f.id ORDER BY deal_count DESC"
 
     rows = conn.execute(sql, params).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -54,7 +53,6 @@ def get_firm(firm_id):
         SELECT * FROM investors WHERE firm_id = ?
     """, (firm_id,)).fetchall()
 
-    conn.close()
     return jsonify({
         "firm": dict(firm),
         "deals": [dict(d) for d in deals],
@@ -91,7 +89,6 @@ def get_investors():
     sql += " GROUP BY i.id ORDER BY deal_count DESC, i.name"
 
     rows = conn.execute(sql, params).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -118,7 +115,6 @@ def get_investor(investor_id):
         ORDER BY d.date_announced DESC
     """, (investor_id,)).fetchall()
 
-    conn.close()
     return jsonify({
         "investor": dict(inv),
         "deals": [dict(d) for d in deals],
@@ -164,7 +160,6 @@ def get_firm_partners(firm_id):
 
     partner_data = [{**dict(p), "categories": cats_by_partner.get(p["id"], [])} for p in partners]
 
-    conn.close()
     return jsonify({
         "firm": dict(firm),
         "partners": partner_data,
@@ -178,7 +173,6 @@ def get_firm_profile(firm_id):
 
     firm = conn.execute("SELECT * FROM firms WHERE id = ?", (firm_id,)).fetchone()
     if not firm:
-        conn.close()
         return jsonify({"error": "Firm not found"}), 404
 
     deals = conn.execute("""
@@ -312,8 +306,6 @@ def get_firm_profile(firm_id):
                 for r in rounds
             ]
 
-    conn.close()
-
     return jsonify({
         "firm": dict(firm),
         "kpis": {
@@ -359,7 +351,6 @@ def partners_by_category():
         GROUP BY c.name, i.id
         ORDER BY c.name, deal_count DESC
     """).fetchall()
-    conn.close()
 
     result = {}
     for row in rows:
@@ -395,7 +386,6 @@ def get_portfolio_linked():
         LEFT JOIN categories c ON d.category_id = c.id
         ORDER BY d.date_announced DESC
     """).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -438,7 +428,6 @@ def get_portfolio():
         ORDER BY company_count DESC
     """).fetchall()
 
-    conn.close()
     return jsonify({
         "companies": [dict(r) for r in rows],
         "total": len(rows),

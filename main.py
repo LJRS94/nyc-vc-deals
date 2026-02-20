@@ -13,6 +13,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
 # Add parent dir to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scrapers"))
@@ -27,6 +30,7 @@ from scrapers.alleywatch_scraper import run_alleywatch_scraper
 from scrapers.llm_extract import extract_deal_from_text, validate_company_name, clean_company_name
 from scrapers.enrichment import run_web_enrichment
 from scrapers.additional_sources import run_additional_sources
+from config import SCRAPE_DEFAULT_DAYS_BACK, GOOGLE_BATCH_SIZE, GOOGLE_BATCH_DAYS_BACK
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger("orchestrator")
 
 
-def run_full_scrape(days_back=14):
+def run_full_scrape(days_back=SCRAPE_DEFAULT_DAYS_BACK):
     """Run all scrapers concurrently via ThreadPoolExecutor."""
     logger.info("=" * 60)
     logger.info(f"Starting full scrape at {datetime.now().isoformat()}")
@@ -530,7 +534,7 @@ def main():
     sub.add_parser("schedule", help="Start bi-weekly scrape scheduler")
 
     scrape_p = sub.add_parser("scrape", help="Run all scrapers")
-    scrape_p.add_argument("--days", type=int, default=14, help="Days to look back")
+    scrape_p.add_argument("--days", type=int, default=SCRAPE_DEFAULT_DAYS_BACK, help="Days to look back")
     scrape_p.add_argument("--clear-cache", action="store_true",
                           help="Clear HTTP cache before scraping")
 
@@ -541,8 +545,8 @@ def main():
     json_p.add_argument("--output", "-o", default="nyc_vc_deals_export.json")
 
     batch_p = sub.add_parser("scrape-batch", help="Run a small batch of Google News queries (for cron)")
-    batch_p.add_argument("--size", type=int, default=15, help="Number of queries per batch")
-    batch_p.add_argument("--days", type=int, default=450, help="Days to look back")
+    batch_p.add_argument("--size", type=int, default=GOOGLE_BATCH_SIZE, help="Number of queries per batch")
+    batch_p.add_argument("--days", type=int, default=GOOGLE_BATCH_DAYS_BACK, help="Days to look back")
 
     enrich_p = sub.add_parser("enrich", help="Backfill descriptions via LLM")
     enrich_p.add_argument("--limit", type=int, default=200, help="Max deals to enrich")

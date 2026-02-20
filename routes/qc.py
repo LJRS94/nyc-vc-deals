@@ -14,7 +14,6 @@ def get_scrape_logs():
     rows = conn.execute(
         "SELECT * FROM scrape_logs ORDER BY started_at DESC LIMIT ?", (SCRAPE_LOGS_LIMIT,)
     ).fetchall()
-    conn.close()
     return jsonify([dict(r) for r in rows])
 
 
@@ -26,7 +25,6 @@ def qc_audit():
         conn = get_connection()
         init_qc_tables(conn)
         result = run_audit(conn)
-        conn.close()
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -46,7 +44,6 @@ def qc_rejections():
             "SELECT pattern_type, pattern_value, hit_count, auto_reject "
             "FROM qc_patterns ORDER BY hit_count DESC LIMIT 20"
         ).fetchall()
-        conn.close()
         return jsonify({
             "rejection_summary": summary,
             "top_patterns": [dict(p) for p in patterns],
@@ -65,7 +62,6 @@ def qc_metrics():
         rows = conn.execute(
             "SELECT * FROM qc_metrics ORDER BY run_date DESC LIMIT 50"
         ).fetchall()
-        conn.close()
         return jsonify([dict(r) for r in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500

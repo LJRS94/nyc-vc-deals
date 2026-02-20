@@ -273,6 +273,7 @@
       const [coinvestors, setCoinvestors] = useState([]);
       const [followons, setFollowons] = useState([]);
       const [completeness, setCompleteness] = useState(null);
+      const [insightsLoaded, setInsightsLoaded] = useState(false);
       const [q, setQ] = useState("");
       const [qBuf, setQBuf] = useState("");
       const [stgF, setStgF] = useState("All");
@@ -309,21 +310,13 @@
           fetch("/api/investors").then(r=>r.json()),
           fetch("/api/portfolio").then(r=>r.json()),
           fetch("/api/me").then(r=>r.json()),
-          fetch("/api/deals/velocity").then(r=>r.json()),
-          fetch("/api/firms/coinvestors").then(r=>r.json()),
-          fetch("/api/deals/followons").then(r=>r.json()),
-          fetch("/api/deals/completeness").then(r=>r.json()),
           fetch("/api/portfolio/linked").then(r=>r.json()),
-        ]).then(([feed, st, fi, inv, port, me, vel, coinv, foll, comp, linked]) => {
+        ]).then(([feed, st, fi, inv, port, me, linked]) => {
           setDeals(feed.deals || []);
           setStats(st);
           setFirms(fi || []);
           setInvestors(inv || []);
           setPortfolio(port || {companies:[], firms:[], total:0});
-          setVelocity(vel || null);
-          setCoinvestors(coinv || []);
-          setFollowons(foll || []);
-          setCompleteness(comp || null);
           setLinkedPortfolio(linked || []);
           if (me.logged_in) {
             setUser(me);
@@ -345,6 +338,24 @@
           fetch("/api/saved/folders").then(r=>r.json()).then(d=>setSavedFolders(d.folders||[]));
         }
       }, [view, selFolder, user, savedIds]);
+
+      /* Lazy-load insights data only when Insights tab is activated */
+      useEffect(() => {
+        if (view === "insights" && !insightsLoaded) {
+          Promise.all([
+            fetch("/api/deals/velocity").then(r=>r.json()),
+            fetch("/api/firms/coinvestors").then(r=>r.json()),
+            fetch("/api/deals/followons").then(r=>r.json()),
+            fetch("/api/deals/completeness").then(r=>r.json()),
+          ]).then(([vel, coinv, foll, comp]) => {
+            setVelocity(vel || null);
+            setCoinvestors(coinv || []);
+            setFollowons(foll || []);
+            setCompleteness(comp || null);
+            setInsightsLoaded(true);
+          });
+        }
+      }, [view, insightsLoaded]);
 
       /* Toggle bookmark */
       const toggleSave = useCallback((dealId, e) => {
@@ -1014,7 +1025,7 @@
               </div>}
 
               {!velocity && !coinvestors.length && !followons.length && <div className="empty" style={{padding:60}}>
-                <div>No insights data yet — run scrapers to populate</div>
+                <div>{insightsLoaded ? "No insights data yet — run scrapers to populate" : "Loading insights..."}</div>
               </div>}
             </div>}
 

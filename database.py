@@ -80,6 +80,8 @@ def init_db(db_path: str = DB_PATH):
         focus_stages TEXT,  -- JSON array: ["Pre-Seed","Seed","Series A","Series B"]
         focus_sectors TEXT, -- JSON array: ["Fintech","Health","SaaS"]
         portfolio_url TEXT,
+        consecutive_failures INTEGER DEFAULT 0,
+        last_scraped_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -127,7 +129,7 @@ def init_db(db_path: str = DB_PATH):
         source_type TEXT CHECK(source_type IN (
             'press_release', 'sec_filing', 'news_article',
             'firm_website', 'crunchbase', 'pitchbook',
-            'de_filing', 'alleywatch', 'google_news', 'other'
+            'de_filing', 'alleywatch', 'google_news', 'ny_dos', 'other'
         )),
         company_name_normalized TEXT,  -- lowercase, no punctuation/spaces for dedup
         raw_text TEXT,             -- original scraped text for reference
@@ -142,6 +144,8 @@ def init_db(db_path: str = DB_PATH):
     CREATE INDEX IF NOT EXISTS idx_deals_company ON deals(company_name);
     CREATE INDEX IF NOT EXISTS idx_deals_normalized ON deals(company_name_normalized);
     CREATE INDEX IF NOT EXISTS idx_deals_source_type ON deals(source_type);
+    CREATE INDEX IF NOT EXISTS idx_deals_category ON deals(category_id);
+    CREATE INDEX IF NOT EXISTS idx_deals_amount ON deals(amount_usd);
 
     -- Many-to-many: deals <-> firms (multiple firms per deal)
     CREATE TABLE IF NOT EXISTS deal_firms (
@@ -690,7 +694,7 @@ def migrate_db(db_path: str = DB_PATH):
         source_type TEXT CHECK(source_type IN (
             'press_release', 'sec_filing', 'news_article',
             'firm_website', 'crunchbase', 'pitchbook',
-            'de_filing', 'alleywatch', 'google_news', 'other'
+            'de_filing', 'alleywatch', 'google_news', 'ny_dos', 'other'
         )),
         company_name_normalized TEXT,
         raw_text TEXT,

@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 from config import ALLEYWATCH_DAILY_BASE
 ALLEYWATCH_DAILY_PATTERN = re.compile(
-    r"/\d{4}/\d{2}/the-alleywatch-startup-daily-funding-report"
+    r"/\d{4}/\d{2}/(?:the-)?alleywatch-(?:startup-)?(?:daily-)?funding-report"
 )
 
 def get_alleywatch_daily_urls(days_back: int = 14) -> List[str]:
@@ -86,6 +86,22 @@ def get_alleywatch_daily_urls(days_back: int = 14) -> List[str]:
         else:
             filtered.append(u)
 
+    # Fallback: discover daily report URLs from RSS feed
+    if not filtered:
+        try:
+            rss_resp = fetch("https://www.alleywatch.com/feed/", timeout=15)
+            if rss_resp.status_code == 200:
+                rss_soup = BeautifulSoup(rss_resp.text, "xml")
+                for item in rss_soup.find_all("item"):
+                    link = item.find("link")
+                    if link:
+                        href = link.get_text(strip=True)
+                        if "funding" in href.lower() and href not in filtered:
+                            filtered.append(href)
+                logger.info(f"RSS fallback found {len(filtered)} funding URLs")
+        except Exception as e:
+            logger.warning(f"AlleyWatch RSS fallback failed: {e}")
+
     logger.info(f"Found {len(filtered)} AlleyWatch daily reports (last {days_back} days)")
     return filtered[:20]  # Cap at 20 to be polite
 
@@ -122,14 +138,16 @@ def parse_alleywatch_daily(url: str) -> List[Dict]:
                 if dm:
                     report_date = f"{dm.group(1)}-{dm.group(2)}-01"
 
-        # Find the main content area — multiple selector fallbacks for site redesigns
-        content = (
-            soup.find("div", class_=re.compile(r"entry-content|post-content|article")) or
-            soup.find("div", class_=re.compile(r"td-post-content|tdb-block-inner")) or
-            soup.find("article") or
-            soup.find("main") or
-            soup
-        )
+        # Find the main content area — use exact class word matching to avoid
+        # hitting empty ad divs (e.g. "jeg_article" matching "article" pattern).
+        content = None
+        for selector in ["entry-content", "post-content", "td-post-content", "tdb-block-inner"]:
+            content = soup.find("div", class_=lambda x: x and selector in x.split())
+            if content and len(content.get_text()) > 200:
+                break
+            content = None
+        if not content:
+            content = soup.find("article") or soup.find("main") or soup
 
         # Each deal is typically in its own <p> or text block
         # Pattern: "CompanyName, a/an [description], has raised $XM in [Round] funding"
@@ -280,7 +298,8 @@ def parse_alleywatch_daily(url: str) -> List[Dict]:
 #  Source 2: AlleyWatch Monthly Roundup (Top N largest rounds)
 
 MONTHLY_ROUNDUP_PATTERN = re.compile(
-    r"/\d{4}/\d{2}/nyc-startup-funding-top-largest-\w+-\d{4}-vc"
+    r"/\d{4}/\d{2}/nyc-startup-funding-top-largest-[\w-]+-vc/"
+    r"|/\d{4}/\d{2}/new-york-venture-capital-\w+-\d{4}/"
 )
 
 def get_monthly_roundup_urls() -> List[str]:

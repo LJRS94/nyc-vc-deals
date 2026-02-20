@@ -60,7 +60,7 @@ NY_DOS_APP_TOKEN = os.environ.get("NY_DOS_APP_TOKEN", "")
 # ── Deal validation thresholds ───────────────────────────────
 MAX_DEAL_AMOUNT = 10_000_000_000    # $10B global cap
 MAX_EARLY_STAGE_AMOUNT = 50_000_000  # $50M early-stage filter
-MAX_COMPANY_NAME_LENGTH = 60         # reject names longer than this
+MAX_COMPANY_NAME_LENGTH = 45         # reject names longer than this (tightened from 60)
 DEDUP_DATE_GAP_DAYS = 180            # >6 months apart = new round
 DEDUP_AMOUNT_RATIO = 2.0             # >2x amount diff = different round
 FUZZY_NAME_THRESHOLD = 0.85          # company name fuzzy-match cutoff

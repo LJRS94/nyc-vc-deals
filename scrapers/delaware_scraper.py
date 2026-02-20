@@ -32,6 +32,7 @@ from scrapers.utils import (
     should_skip_deal, is_nyc_related, classify_sector,
     normalize_stage, parse_amount, link_investors_to_deal,
 )
+from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
 
@@ -555,53 +556,30 @@ def verify_de_incorporation(company_name: str) -> Dict:
 def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[int]:
     """
     Process a single Delaware-related filing/entity and insert into database.
+    Routes through validate_deal() quality gate.
     """
-    # Skip if already exists
-    existing = conn.execute(
-        "SELECT id FROM deals WHERE company_name = ? AND source_type = 'de_filing'",
-        (company_name,)
-    ).fetchone()
-    if existing:
-        return None
-
     amount = filing_data.get("offering_amount") or filing_data.get("amount_sold")
     industry = filing_data.get("industry", "")
     category_name = _detect_category(f"{company_name} {industry}")
-
-    # Determine stage from amount
-    stage = "Unknown"
-    if amount:
-        if amount < 500_000:
-            stage = "Pre-Seed"
-        elif amount < 3_000_000:
-            stage = "Seed"
-        elif amount < 20_000_000:
-            stage = "Series A"
-        elif amount < 80_000_000:
-            stage = "Series B"
-
-    # Skip if it's a VC firm
-    skip = should_skip_deal(conn, company_name, amount)
-    if skip:
-        return None
-
     cat_id = get_category_id(conn, category_name)
 
     source_url = filing_data.get("opencorporates_url") or \
-                 f"https://icis.corp.delaware.gov/ecorp/entitysearch/namesearch.aspx"
+                 "https://icis.corp.delaware.gov/ecorp/entitysearch/namesearch.aspx"
 
-    deal_id = insert_deal(
+    accepted, reason, cleaned = validate_deal(
         conn, company_name,
-        stage=stage,
-        amount_usd=amount,
-        amount_disclosed=1 if amount else 0,
+        amount=amount,
         date_announced=filing_data.get("filing_date") or filing_data.get("incorporation_date"),
-        source_url=source_url,
         source_type="de_filing",
-        category_id=cat_id,
         raw_text=json.dumps(filing_data)[:2000],
-        confidence_score=0.75 if amount else 0.4,
+        source_url=source_url,
+        category_id=cat_id,
     )
+    if not accepted:
+        return None
+
+    deal_kwargs = {k: v for k, v in cleaned.items() if k != "company_name"}
+    deal_id = insert_deal(conn, cleaned["company_name"], **deal_kwargs)
 
     # Link investors if available
     if deal_id and filing_data.get("investors"):
@@ -709,7 +687,7 @@ def run_delaware_scraper(days_back: int = 14):
                     deal_id,
                 ))
 
-            # Insert Source 3 news deals
+            # Insert Source 3 news deals (via quality gate)
             for article in news_articles:
                 title = article.get("title", "")
                 url = article.get("url", "")
@@ -723,34 +701,23 @@ def run_delaware_scraper(days_back: int = 14):
                     continue
 
                 amount = parse_amount(full_text[:500])
-                stage = normalize_stage(full_text)
                 category_name = _detect_category(full_text)
                 investors = extract_investors(full_text)
-
-                # Skip VC firms and deals > $50M
-                skip = should_skip_deal(conn, company_name, amount)
-                if skip:
-                    continue
-
-                existing = conn.execute(
-                    "SELECT id FROM deals WHERE company_name = ?",
-                    (company_name,)
-                ).fetchone()
-                if existing:
-                    continue
-
                 cat_id = get_category_id(conn, category_name)
-                deal_id = insert_deal(
+
+                accepted, reason, cleaned = validate_deal(
                     conn, company_name,
-                    stage=stage,
-                    amount_usd=amount,
-                    amount_disclosed=1 if amount else 0,
-                    source_url=url,
+                    amount=amount,
                     source_type="de_filing",
+                    source_url=url,
                     category_id=cat_id,
                     raw_text=full_text[:2000],
-                    confidence_score=0.6,
                 )
+                if not accepted:
+                    continue
+
+                deal_kwargs = {k: v for k, v in cleaned.items() if k != "company_name"}
+                deal_id = insert_deal(conn, cleaned["company_name"], **deal_kwargs)
 
                 if deal_id:
                     total_new += 1

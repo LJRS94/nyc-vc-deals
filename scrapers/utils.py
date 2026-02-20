@@ -14,6 +14,11 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Optional, List, Tuple, Dict
 
+from config import (
+    DEDUP_DATE_GAP_DAYS, DEDUP_AMOUNT_RATIO, FUZZY_NAME_THRESHOLD,
+    FIRM_NAME_MIN_LENGTH, FIRM_MATCH_RATIO,
+)
+
 
 # ── Stage normalization ───────────────────────────────────────
 
@@ -205,7 +210,7 @@ def normalize_company_name(name: str) -> str:
     return _STRIP_RE.sub("", name.lower())
 
 
-def company_names_match(a: str, b: str, threshold: float = 0.85) -> bool:
+def company_names_match(a: str, b: str, threshold: float = FUZZY_NAME_THRESHOLD) -> bool:
     """
     Fuzzy match two company names.
     V.06 addition — catches "Sixfold AI" vs "Sixfold", "FJ Labs" vs "FJLabs".
@@ -259,9 +264,9 @@ def is_vc_firm(conn, company_name: str) -> bool:
         return True
     # Containment match (e.g. "Insight Partners Fund" contains "insightpartners")
     for fn in firm_names:
-        if len(fn) >= 5 and (fn in norm or norm in fn):
+        if len(fn) >= FIRM_NAME_MIN_LENGTH and (fn in norm or norm in fn):
             shorter, longer = (fn, norm) if len(fn) <= len(norm) else (norm, fn)
-            if len(shorter) / len(longer) >= 0.7:
+            if len(shorter) / len(longer) >= FIRM_MATCH_RATIO:
                 return True
     return False
 
@@ -351,7 +356,7 @@ def is_duplicate_deal(conn, company_name: str, stage: str,
                 d1 = datetime.strptime(date_announced, "%Y-%m-%d")
                 d2 = datetime.strptime(ex_date, "%Y-%m-%d")
                 gap_days = abs((d1 - d2).days)
-                if gap_days > 180:  # >6 months apart → likely new round
+                if gap_days > DEDUP_DATE_GAP_DAYS:  # >6 months apart → likely new round
                     continue
             except (ValueError, TypeError):
                 pass  # can't parse dates, fall through to duplicate
@@ -360,7 +365,7 @@ def is_duplicate_deal(conn, company_name: str, stage: str,
         if amount and ex_amount:
             # Significantly different amounts → likely different round
             ratio = max(amount, ex_amount) / max(min(amount, ex_amount), 1)
-            if ratio > 2.0:  # more than 2x difference
+            if ratio > DEDUP_AMOUNT_RATIO:  # more than 2x difference
                 continue
 
         # All checks passed → this is a duplicate
@@ -458,8 +463,12 @@ def link_investors_to_deal(conn, deal_id: int, investors: List[Dict],
         if firm_id:
             link_deal_firm_fn(conn, deal_id, firm_id, role)
         else:
-            new_firm_id = upsert_firm_fn(conn, inv_name, location="Unknown")
-            link_deal_firm_fn(conn, deal_id, new_firm_id, role)
+            # Only create a firm record if the name looks like a firm, not an individual
+            _firm_keywords = ("capital", "ventures", "partners", "group", "labs", "fund",
+                              "invest", "vc", "advisors", "management", "equity", "holdings")
+            if any(kw in inv_name.lower() for kw in _firm_keywords):
+                new_firm_id = upsert_firm_fn(conn, inv_name, location="Unknown")
+                link_deal_firm_fn(conn, deal_id, new_firm_id, role)
 
         if role == "lead" and lead_investor_id is None:
             lead_investor_id = inv_id
