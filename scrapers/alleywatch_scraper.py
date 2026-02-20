@@ -506,43 +506,7 @@ def scrape_google_news_deals(days_back: int = 14) -> List[Dict]:
     return deals
 
 
-#  Deal insertion & deduplication
-
-def deal_exists(conn, company_name: str, amount: Optional[float] = None) -> bool:
-    """
-    Check if a deal already exists for this company (with similar amount).
-    Uses normalized names + substring matching so "Sixfold AI" and "Sixfold" dedup.
-    """
-    norm = normalize_company_name(company_name)
-    if not norm:
-        return False
-
-    # Exact normalized match
-    rows = conn.execute(
-        "SELECT id, amount_usd, company_name_normalized FROM deals "
-        "WHERE company_name_normalized = ?",
-        (norm,)
-    ).fetchall()
-
-    # Substring fallback: "sixfoldai" contains "sixfold" or vice versa
-    if not rows:
-        rows = conn.execute(
-            "SELECT id, amount_usd, company_name_normalized FROM deals "
-            "WHERE company_name_normalized LIKE ? OR ? LIKE '%' || company_name_normalized || '%'",
-            (f"%{norm}%", norm)
-        ).fetchall()
-
-    if not rows:
-        return False
-    if amount:
-        for row in rows:
-            existing_amt = row["amount_usd"]
-            if existing_amt and abs(existing_amt - amount) / max(existing_amt, 1) < 0.15:
-                return True  # Same company, similar amount = duplicate
-    else:
-        return len(rows) > 0
-    return False
-
+#  Deal insertion
 
 def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
     """Insert a parsed deal into the database via unified quality gate."""

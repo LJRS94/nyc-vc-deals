@@ -30,7 +30,7 @@ from scrapers.utils import (
 from scrapers.llm_extract import (
     extract_deals_batch, validate_company_name, clean_company_name,
 )
-from quality_control import validate_deal, init_qc_tables
+from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
 

@@ -231,7 +231,7 @@ _HEADLINE_PREFIX_RE = re.compile(
     r"In-House|Patent|Contract|Subletting|Swiss|"
     r"AI-Powered|AI-Coding|Generative\s*AI|Embedded|"
     r"AI\s+Cloud|AI\s+Video|AI\s+digital|AI\s+field|AI\s+agent|AI\s+Client)"
-    r"[\s\-]+(?:startup|company|firm|platform|app|founder|operations|research)?)",
+    r"[\s\-]+(?:startup|company|firm|platform|app|founder|operations|research))",
     re.I
 )
 

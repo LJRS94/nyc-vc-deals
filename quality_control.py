@@ -15,7 +15,6 @@ Features:
 import re
 import json
 import logging
-import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 
@@ -112,13 +111,6 @@ def _extract_pattern(company_name: str, reason: str) -> Optional[str]:
 
 # ── The Single Quality Gate ─────────────────────────────────────
 
-# Known non-startup patterns (learned from past rejections + manual review)
-_NON_STARTUP_RE = re.compile(
-    r"(?i)\b(startup|venture|capital|fund|partner|holding|"
-    r"accelerator|incubator|consortium|foundation|institute|"
-    r"university|school|college|government|federal|state|municipal)\b"
-)
-
 _BAD_NAME_PATTERNS = [
     re.compile(r"^(this|that|a|an|my|our|some)\s", re.I),
     re.compile(r"\b(startup|company|firm|platform)\s*$", re.I),
@@ -152,6 +144,9 @@ def validate_deal(conn, company_name: str, stage: str = "Unknown",
 
     # Clean the name
     company_name = clean_company_name(company_name.strip())
+    if not company_name or len(company_name.strip()) < 2:
+        _log_rejection(conn, company_name, "bad_name_empty", source_type, raw_text)
+        return False, "empty_name", {}
 
     # Length check (tightened from 60 to 45)
     if len(company_name) > 45:

@@ -10,6 +10,7 @@ V.06 changes:
 """
 
 import re
+from datetime import datetime
 from functools import lru_cache
 from typing import Optional, List, Tuple
 
@@ -349,7 +350,6 @@ def is_duplicate_deal(conn, company_name: str, stage: str,
         # Same stage (or one is Unknown) — check dates
         if date_announced and ex_date:
             try:
-                from datetime import datetime
                 d1 = datetime.strptime(date_announced, "%Y-%m-%d")
                 d2 = datetime.strptime(ex_date, "%Y-%m-%d")
                 gap_days = abs((d1 - d2).days)
