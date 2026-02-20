@@ -24,7 +24,7 @@ from database import (
     get_user_preferences, set_user_preferences,
     save_deal, unsave_deal, update_saved_deal,
     get_saved_deals, get_saved_deal_ids, get_saved_folders,
-    reset_stuck_scrape_logs,
+    reset_stuck_scrape_logs, backup_db,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -502,6 +502,12 @@ def _run_scrape_background():
         except Exception as e:
             logger.warning(f"Notification generation warning: {e}")
 
+        # Backup DB after successful scrape
+        try:
+            backup_db()
+        except Exception as e:
+            logger.warning(f"Database backup warning: {e}")
+
         _scrape_status["last_result"] = f"Completed. {deal_count} total deals."
         logger.info(f"Background scrape complete: {deal_count} deals")
 
@@ -539,6 +545,12 @@ def _run_portfolio_scrape():
             )
         except Exception as e:
             logger.warning(f"Portfolio verification warning: {e}")
+
+        # Backup DB after successful portfolio scrape
+        try:
+            backup_db()
+        except Exception as e:
+            logger.warning(f"Database backup warning: {e}")
 
         _scrape_status["last_result"] = f"Portfolio scrape done. {pc_count} companies."
         logger.info(f"Portfolio scrape complete: {pc_count} companies")

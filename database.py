@@ -6,6 +6,7 @@ SQLite database with models for deals, firms, investors, and categories.
 import sqlite3
 import os
 import re
+import shutil
 import logging
 import threading
 from contextlib import contextmanager
@@ -310,6 +311,77 @@ def init_db(db_path: str = DB_PATH):
         logger.debug("QC module not yet available during early init")
 
     logger.info(f"Initialized database at {db_path}")
+
+
+def backup_db(db_path: str = DB_PATH):
+    """Create an atomic backup of the database using sqlite3.backup().
+
+    Writes to a .tmp file first, then atomically renames to .backup
+    so readers never see a partial file.
+    """
+    backup_path = db_path + ".backup"
+    tmp_path = db_path + ".backup.tmp"
+    src = sqlite3.connect(db_path, timeout=60)
+    try:
+        dst = sqlite3.connect(tmp_path)
+        try:
+            src.backup(dst)
+            dst.close()
+            os.replace(tmp_path, backup_path)
+            logger.info(f"Database backed up to {backup_path}")
+        except Exception:
+            dst.close()
+            raise
+    finally:
+        src.close()
+
+
+def restore_if_empty(db_path: str = DB_PATH):
+    """Restore from backup if the database has 0 deals (or doesn't exist).
+
+    Called before init_db() on startup so data survives Render redeploys.
+    """
+    backup_path = db_path + ".backup"
+
+    if not os.path.exists(backup_path):
+        logger.info("No backup file found, skipping restore")
+        return
+
+    # Check whether the current DB is empty / missing
+    needs_restore = False
+    if not os.path.exists(db_path):
+        needs_restore = True
+    else:
+        try:
+            conn = sqlite3.connect(db_path, timeout=60)
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+            if "deals" not in tables:
+                needs_restore = True
+            else:
+                count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+                needs_restore = count == 0
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Error checking DB, will restore: {e}")
+            needs_restore = True
+
+    if not needs_restore:
+        logger.info("Database has data, skipping restore")
+        return
+
+    logger.info(f"Restoring database from {backup_path}")
+    shutil.copy2(backup_path, db_path)
+
+    # Clean up stale WAL/SHM files that may reference the old DB
+    for suffix in ("-wal", "-shm"):
+        stale = db_path + suffix
+        if os.path.exists(stale):
+            os.remove(stale)
+            logger.info(f"Removed stale {stale}")
+
+    logger.info("Database restored from backup")
 
 
 @contextmanager
