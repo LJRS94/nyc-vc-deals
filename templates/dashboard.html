@@ -348,6 +348,7 @@
       const [qBuf, setQBuf] = useState("");
       const [stgF, setStgF] = useState("All");
       const [catF, setCatF] = useState("All");
+      const [monthF, setMonthF] = useState("All");
       const [sort, setSort] = useState({f:"amount_usd",d:"desc"});
       const [earlyOnly, setEarlyOnly] = useState(true);
       const [fSort, setFSort] = useState({f:"total_invested",d:"desc"});
@@ -566,6 +567,7 @@
       /* Derived data */
       const allStages = useMemo(() => [...new Set(deals.map(d=>d.stage))].filter(Boolean).sort(), [deals]);
       const allCats = useMemo(() => [...new Set(deals.map(d=>d.category))].filter(Boolean).sort(), [deals]);
+      const allMonths = useMemo(() => [...new Set(deals.map(d=>d.date_announced?.slice(0,7)).filter(Boolean))].sort().reverse(), [deals]);
 
       /* Filtered + sorted deals */
       const rows = useMemo(() => {
@@ -573,6 +575,7 @@
         if (earlyOnly) d = d.filter(x => !x.amount_usd || x.amount_usd <= 50000000);
         if (stgF !== "All") d = d.filter(x => x.stage === stgF);
         if (catF !== "All") d = d.filter(x => x.category === catF);
+        if (monthF !== "All") d = d.filter(x => (x.date_announced||"").startsWith(monthF));
         if (selFirmName) d = d.filter(x => (x.firms||[]).includes(selFirmName) || (x.lead_firms||[]).includes(selFirmName));
         /* My Feed — apply user preferences as filters */
         if (myFeedOn && prefs) {
@@ -598,7 +601,7 @@
           return sort.d==="asc"?(va<vb?-1:va>vb?1:0):(va>vb?-1:va<vb?1:0);
         });
         return d;
-      }, [deals, q, stgF, catF, sort, selFirmName, earlyOnly, myFeedOn, prefs]);
+      }, [deals, q, stgF, catF, monthF, sort, selFirmName, earlyOnly, myFeedOn, prefs]);
 
       /* Firm aggregates from deals */
       const firmAgg = useMemo(() => {
@@ -635,8 +638,8 @@
         return m;
       }, [linkedPortfolio]);
       const totCap = rows.reduce((s,d) => s+(d.amount_usd||0), 0);
-      const activeF = [stgF!=="All"&&stgF, catF!=="All"&&catF, selFirmName, q].filter(Boolean);
-      const clearAll = () => { setStgF("All");setCatF("All");setSelFirm(null);setFirmProfile(null);setSelCat(null);setQ("");setQBuf(""); };
+      const activeF = [stgF!=="All"&&stgF, catF!=="All"&&catF, monthF!=="All"&&monthF, selFirmName, q].filter(Boolean);
+      const clearAll = () => { setStgF("All");setCatF("All");setMonthF("All");setSelFirm(null);setFirmProfile(null);setSelCat(null);setQ("");setQBuf(""); };
       const goFirm = useCallback(n => {
         const f = firms.find(x => x.name === n);
         if (f) { setSelFirm(f.id); setView("firms"); }
@@ -733,6 +736,16 @@
               style={{borderColor:earlyOnly?"#22c55e55":"#1a1b2e",background:earlyOnly?"#22c55e14":"transparent",color:earlyOnly?"#22c55e":"#52536b",fontWeight:earlyOnly?700:500}}>
               {earlyOnly ? "Early Stage ≤$50M" : "All Stages"}
             </button>
+            <div style={{width:1,height:16,background:"#1a1b2e"}} />
+            <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Month</span>
+            <select value={monthF} onChange={e=>setMonthF(e.target.value)}
+              style={{padding:"2px 9px",borderRadius:3,fontSize:10.5,fontWeight:monthF!=="All"?700:500,
+                border:`1px solid ${monthF!=="All"?"#3b82f655":"#1a1b2e"}`,
+                background:monthF!=="All"?"#3b82f614":"transparent",
+                color:monthF!=="All"?"#60a5fa":"#52536b",cursor:"pointer",outline:"none"}}>
+              <option value="All">All Months</option>
+              {allMonths.map(m=><option key={m} value={m}>{m}</option>)}
+            </select>
             {user && (prefs.sectors?.length || prefs.stages?.length) && (
               <button onClick={()=>setMyFeedOn(!myFeedOn)} className={`pill ${myFeedOn?"on":""}`}
                 style={{borderColor:myFeedOn?"#a78bfa55":"#1a1b2e",background:myFeedOn?"#a78bfa14":"transparent",color:myFeedOn?"#a78bfa":"#52536b",fontWeight:myFeedOn?700:500}}>
