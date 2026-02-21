@@ -472,6 +472,8 @@ def _clean_investor_name(name: str) -> str:
     if not name:
         return ""
     name = name.strip().rstrip(".;,")
+    # Strip trailing "and" / "or" (leftover from list splitting)
+    name = re.sub(r"\s+(?:and|or)\s*$", "", name, flags=re.I).strip()
     # Strip leading qualifiers: "existing investors X" → "X"
     name = re.sub(
         r"^(?:existing|earlier|returning|previous|new|other)\s+"
@@ -569,9 +571,10 @@ def extract_investors(text: str) -> List[Dict]:
     def _split_names(text):
         return re.split(r",\s*(?:and\s+)?|\s+and\s+", text)
 
-    # "led by" pattern (\b word boundaries prevent matching "and" inside "expand")
+    # "led by" pattern — allow digits in name (e.g. "Base10 Partners"),
+    # stop at prepositions/conjunctions/punctuation to avoid capturing sentence tails
     lead_match = re.search(
-        r"led\s+by\s+([A-Z][A-Za-z\s&,\.\-]+?)(?:\s*(?:\bwith\b|\bwhich\b|\bwho\b|\.|$))",
+        r"led\s+by\s+([A-Z0-9][A-Za-z0-9\s&,\.\-]+?)(?:\s*(?:\bwith\b|\bwhich\b|\bwho\b|\bto\b|\bat\b|\bin\b|\.|,\s(?![A-Z])|$))",
         text_str
     )
     if lead_match:

@@ -16,9 +16,14 @@ import argparse
 import logging
 import sys
 
-from database import get_connection, _normalize_name
-from scrapers.utils import company_names_match
-from scrapers.news_scraper import _clean_investor_name, _is_valid_investor_name
+from database import (
+    get_connection, _normalize_name, upsert_investor, upsert_firm,
+    link_deal_investor, link_deal_firm,
+)
+from scrapers.utils import company_names_match, link_investors_to_deal
+from scrapers.news_scraper import (
+    _clean_investor_name, _is_valid_investor_name, extract_investors,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +201,42 @@ def merge_duplicate_investors(conn, dry_run: bool = True) -> int:
     return merged
 
 
+def extract_investors_from_raw_text(conn, dry_run: bool = True) -> int:
+    """For deals with raw_text but no investors, re-run regex extraction."""
+    deals = conn.execute("""
+        SELECT d.id, d.company_name, d.raw_text
+        FROM deals d
+        LEFT JOIN deal_investors di ON d.id = di.deal_id
+        WHERE di.deal_id IS NULL
+          AND d.raw_text IS NOT NULL
+          AND LENGTH(d.raw_text) > 100
+        ORDER BY d.id
+    """).fetchall()
+
+    extracted = 0
+    for d in deals:
+        investors = extract_investors(d["raw_text"])
+        if not investors:
+            continue
+        if dry_run:
+            inv_str = ", ".join(f"{i['name']} ({i['role']})" for i in investors)
+            logger.info(f"  [DRY] Would add investors to deal [{d['id']}] {d['company_name']}: {inv_str}")
+        else:
+            link_investors_to_deal(
+                conn, d["id"], investors,
+                upsert_investor_fn=upsert_investor,
+                link_deal_investor_fn=link_deal_investor,
+                upsert_firm_fn=upsert_firm,
+                link_deal_firm_fn=link_deal_firm,
+            )
+        extracted += 1
+
+    if not dry_run and extracted:
+        conn.commit()
+    logger.info(f"extract_investors_from_raw_text: {extracted} deals {'would get' if dry_run else 'got'} investors")
+    return extracted
+
+
 def backfill_deal_firm_links(conn, dry_run: bool = True) -> int:
     """For deals with deal_investors but no deal_firms, create missing firm links."""
     # Find deals that have investors but no firm links
@@ -297,6 +338,7 @@ def main():
     print()
 
     purge_junk_investors(conn, dry_run=args.dry_run)
+    extract_investors_from_raw_text(conn, dry_run=args.dry_run)
     relink_orphaned_to_firms(conn, dry_run=args.dry_run)
     merge_duplicate_investors(conn, dry_run=args.dry_run)
     backfill_deal_firm_links(conn, dry_run=args.dry_run)

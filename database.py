@@ -283,6 +283,7 @@ def init_db(db_path: str = DB_PATH):
         ('Media & Entertainment'),
         ('Food & Agriculture'),
         ('Hardware / Robotics'),
+        ('Robotics / Deep Tech'),
         ('Web3 / Crypto'),
         ('Legal Tech'),
         ('HR / Future of Work'),

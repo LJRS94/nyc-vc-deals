@@ -177,6 +177,12 @@ SECTOR_KEYWORDS = {
                                  "procurement", "warehouse", "freight"],
     "Education / Edtech": ["education", "edtech", "learning", "tutoring",
                            "school", "student"],
+    "Robotics / Deep Tech": ["robotics", "robot", "deep tech", "deeptech",
+                              "autonomous", "drone", "semiconductor", "quantum",
+                              "lidar", "sensor", "actuator", "3d printing",
+                              "additive manufacturing", "materials science",
+                              "photonics", "nanotechnology", "space tech",
+                              "advanced manufacturing", "industrial automation"],
 }
 
 
