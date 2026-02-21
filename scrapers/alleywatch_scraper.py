@@ -38,6 +38,7 @@ from scrapers.utils import (
 from scrapers.llm_extract import (
     extract_alleywatch_deals, validate_company_name, clean_company_name,
 )
+from scrapers.news_scraper import _clean_investor_name, _is_valid_investor_name
 from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
@@ -580,12 +581,15 @@ def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
 
     deal_id = insert_deal(conn, cleaned.pop("company_name"), **cleaned)
 
-    # Link investors via shared utility
+    # Link investors via shared utility (clean names from LLM output)
     lead_name = deal.get("lead_investor")
     investor_dicts = []
     for inv_name in deal.get("all_investors", []):
+        cleaned = _clean_investor_name(inv_name)
+        if not _is_valid_investor_name(cleaned):
+            continue
         role = "lead" if inv_name == lead_name else "participant"
-        investor_dicts.append({"name": inv_name, "role": role})
+        investor_dicts.append({"name": cleaned, "role": role})
     if investor_dicts:
         link_investors_to_deal(
             conn, deal_id, investor_dicts,

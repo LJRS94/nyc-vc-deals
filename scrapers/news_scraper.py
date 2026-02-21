@@ -482,8 +482,28 @@ def _clean_investor_name(name: str) -> str:
     name = re.sub(r"^as\s+well\s+as\s+(?:new\s+)?(?:investor\s+)?", "", name, flags=re.I).strip()
     # Strip "-based" prefixes: "New York-based X" → "X"
     name = re.sub(r"^[\w\s]+-based\s+", "", name, flags=re.I).strip()
-    # Strip "X's VC arm Y" → "Y"
-    name = re.sub(r"^.+?'s\s+(?:VC|venture)\s+arm\s+", "", name, flags=re.I).strip()
+    # Strip "X's VC arm Y" → "Y" (handle both straight and curly apostrophes)
+    name = re.sub(r"^.+?['\u2019]s\s+(?:VC|venture)\s+arm\s+", "", name, flags=re.I).strip()
+    # Strip "X's Y" where X is a person/company: "Google\u2019s Gradient Ventures" → "Gradient Ventures"
+    name = re.sub(r"^[A-Z][\w]+(?:\s+[\w]+)?['\u2019]s\s+", "", name).strip()
+    # Strip leading descriptor: "B2B specialist Georgian" → "Georgian"
+    name = re.sub(
+        r"^(?:B2B|B2C|SaaS|AI|fintech)\s+(?:specialist|focused|focused)\s+",
+        "", name, flags=re.I,
+    ).strip()
+    # Strip trailing "also participating/joined" etc.
+    name = re.sub(r"\s+also\s+(?:participating|joined|invested).*$", "", name, flags=re.I).strip()
+    # Strip "X founder Y" → "Y" (person name after founder label)
+    name = re.sub(r"^.+?\s+founder\s+", "", name, flags=re.I).strip()
+    # Strip trailing non-firm word after a firm keyword:
+    # "Inspired Capital Kalepa" → "Inspired Capital"
+    # but preserve "Inspired Capital Partners" (Partners is a firm suffix)
+    _firm_suffixes = r"(?:Partners|Group|Fund|Management|Corp|LLC|LP|Inc|Holdings|Associates)"
+    name = re.sub(
+        r"((?:Capital|Ventures|Partners|Group|Fund|Management|Advisors|Holdings|Equity)\b)"
+        r"\s+(?!" + _firm_suffixes + r"\b)[A-Z]\w+$",
+        r"\1", name,
+    ).strip()
     return name
 
 
@@ -496,15 +516,37 @@ def _is_valid_investor_name(name: str) -> bool:
     # Must start with uppercase or digit
     if name[0].islower():
         return False
+    # Reject bare month abbreviations or single short words
+    if name in ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"):
+        return False
+    # Reject names starting with 3+ digits ("000 buy-") or year + word ("2020 Oura")
+    if re.match(r"^\d{3,}\s", name) or re.match(r"^\d{4}\s\w+$", name):
+        return False
+    # Reject names ending with punctuation like hyphens ("000 buy-")
+    if name[-1] in ("-", "(", "["):
+        return False
+    # Reject if starts with quote or junk punctuation
+    if name[0] in ('"', "'", '\u201c', '\u201d', '\u2018', '\u2019'):
+        return False
     # Reject if more than 5 words (likely a sentence fragment)
     words = name.split()
     if len(words) > 5:
         return False
     # Reject if contains filler/verb words (not normal in firm names)
     _filler = {"to", "the", "a", "an", "is", "are", "was", "were", "has", "have",
-               "into", "from", "which", "who", "that", "this", "its", "their"}
+               "into", "from", "which", "who", "that", "this", "its", "their",
+               "said", "felt", "slow", "very", "so", "also"}
     if any(w.lower() in _filler for w in words):
         return False
+    # Reject single-word names that are common nouns / product brands (not firm-like)
+    if len(words) == 1:
+        _not_firms = {"Square", "Cowboy", "VanMoof", "Aventon", "Oura"}
+        if name in _not_firms:
+            return False
+        # Single word under 4 chars that isn't uppercase (like an acronym) is suspicious
+        if len(name) < 4 and not name.isupper():
+            return False
     return True
 
 
@@ -614,14 +656,18 @@ def process_deal(conn, title: str, url: str, full_text: str,
             description = llm_result.get("description")
             category_name = llm_result.get("sector") or detect_category(combined_text)
 
-            # Extract investors from LLM
+            # Extract investors from LLM (apply same cleaning as regex path)
             llm_investors = llm_result.get("investors", [])
             lead_inv = llm_result.get("lead_investor")
             if lead_inv:
-                investors.append({"name": lead_inv, "role": "lead"})
+                lead_inv = _clean_investor_name(lead_inv)
+                if _is_valid_investor_name(lead_inv):
+                    investors.append({"name": lead_inv, "role": "lead"})
             for inv in llm_investors:
                 if inv != lead_inv:
-                    investors.append({"name": inv, "role": "participant"})
+                    cleaned_inv = _clean_investor_name(inv)
+                    if _is_valid_investor_name(cleaned_inv):
+                        investors.append({"name": cleaned_inv, "role": "participant"})
 
     # Regex fallback if LLM didn't produce a company name
     if not company_name:

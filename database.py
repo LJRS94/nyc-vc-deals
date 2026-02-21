@@ -94,6 +94,7 @@ def init_db(db_path: str = DB_PATH):
     CREATE TABLE IF NOT EXISTS investors (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
+        name_normalized TEXT,
         firm_id INTEGER,
         title TEXT,
         linkedin_url TEXT,
@@ -303,6 +304,31 @@ def init_db(db_path: str = DB_PATH):
         conn.commit()
         logger.info("Migrated deal_firms: added verified/source columns")
 
+    # Migrate investors: add name_normalized column if missing
+    inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(investors)").fetchall()}
+    if "name_normalized" not in inv_cols:
+        conn.execute("ALTER TABLE investors ADD COLUMN name_normalized TEXT")
+        # Backfill existing rows
+        rows = conn.execute("SELECT id, name FROM investors").fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE investors SET name_normalized = ? WHERE id = ?",
+                (_normalize_name(row["name"]), row["id"])
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_investor_name_norm "
+            "ON investors(name_normalized)"
+        )
+        conn.commit()
+        logger.info(f"Migrated investors: added name_normalized, backfilled {len(rows)} rows")
+
+    # Ensure index exists (covers both fresh DBs and migrated ones)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_investor_name_norm "
+        "ON investors(name_normalized)"
+    )
+    conn.commit()
+
     # Initialize QC tables
     try:
         from quality_control import init_qc_tables
@@ -415,7 +441,7 @@ _FIRMS_COLUMNS = {
     "focus_stages", "focus_sectors", "portfolio_url",
 }
 _INVESTORS_COLUMNS = {
-    "title", "linkedin_url", "twitter_url", "focus_areas",
+    "title", "linkedin_url", "twitter_url", "focus_areas", "name_normalized",
 }
 _DEALS_COLUMNS = {
     "company_website", "company_description", "stage", "amount_usd",
@@ -466,12 +492,25 @@ def upsert_firm(conn, name: str, **kwargs) -> int:
 
 def upsert_investor(conn, name: str, firm_id: Optional[int] = None, **kwargs) -> int:
     _validate_columns(kwargs, _INVESTORS_COLUMNS, "investors")
+    # Exact match first
     existing = conn.execute(
         "SELECT id FROM investors WHERE name = ? AND firm_id IS ?",
         (name, firm_id)
     ).fetchone()
     if existing:
         return existing["id"]
+    # Normalized match fallback (catches case/punctuation differences)
+    norm = _normalize_name(name)
+    if norm:
+        norm_match = conn.execute(
+            "SELECT id FROM investors WHERE name_normalized = ? AND firm_id IS ?",
+            (norm, firm_id)
+        ).fetchone()
+        if norm_match:
+            return norm_match["id"]
+    # Insert new investor with normalized name
+    if "name_normalized" not in kwargs:
+        kwargs["name_normalized"] = norm
     cols = ["name", "firm_id"] + list(kwargs.keys())
     vals = [name, firm_id] + list(kwargs.values())
     placeholders = ", ".join(["?"] * len(vals))
