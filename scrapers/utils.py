@@ -76,18 +76,21 @@ def normalize_stage(raw: str) -> str:
 
 
 def classify_stage_from_amount(amount: Optional[float]) -> str:
-    """Estimate funding stage from amount when no other signal exists."""
+    """Estimate funding stage from amount when no other signal exists.
+    Updated for 2025-2026 market: seed rounds routinely hit $5-8M,
+    Series A is commonly $20-40M.
+    """
     if amount is None:
         return "Unknown"
-    if amount < 500_000:
+    if amount < 2_000_000:
         return "Pre-Seed"
-    if amount < 3_000_000:
+    if amount < 8_000_000:
         return "Seed"
-    if amount < 20_000_000:
+    if amount < 40_000_000:
         return "Series A"
-    if amount < 80_000_000:
+    if amount < 100_000_000:
         return "Series B"
-    return "Series C+"  # V.06 fix: was "Unknown", losing data
+    return "Series C+"
 
 
 # ── Amount parsing ────────────────────────────────────────────
@@ -334,6 +337,8 @@ def is_duplicate_deal(conn, company_name: str, stage: str,
     """
     Smart dedup: returns True if this deal is a duplicate of an existing one.
     Keeps legitimate multi-round deals (different stage or >6 months apart).
+    Uses both exact normalized match and fuzzy match for names like
+    "Ramp" vs "Ramp Financial".
 
     Rules:
     - Same company + same stage + same date → duplicate
@@ -346,11 +351,25 @@ def is_duplicate_deal(conn, company_name: str, stage: str,
     if not norm:
         return False
 
+    # Exact normalized match
     existing = conn.execute(
-        "SELECT id, stage, amount_usd, date_announced FROM deals "
+        "SELECT id, stage, amount_usd, date_announced, company_name_normalized FROM deals "
         "WHERE company_name_normalized = ?",
         (norm,)
     ).fetchall()
+
+    # Fuzzy match: find deals where the normalized name contains or is contained by ours
+    if not existing and len(norm) >= 4:
+        # Use LIKE for substring containment (covers "ramp" in "rampfinancial")
+        fuzzy_rows = conn.execute(
+            "SELECT id, stage, amount_usd, date_announced, company_name_normalized FROM deals "
+            "WHERE company_name_normalized LIKE ? OR ? LIKE '%' || company_name_normalized || '%'",
+            (f"%{norm}%", norm)
+        ).fetchall()
+        # Filter to only keep genuine fuzzy matches (length ratio >= threshold)
+        for row in fuzzy_rows:
+            if company_names_match(company_name, row["company_name_normalized"]):
+                existing.append(row)
 
     if not existing:
         return False
@@ -398,7 +417,7 @@ def parse_investors(text: str) -> Tuple[List[str], Optional[str]]:
         return [], None
 
     lead = None
-    m = re.search(r"led by\s+([^,.]+(?:,\s*[^,.]+)?)", text, re.I)
+    m = re.search(r"led by\s+([^,.]+?)(?:\s+with\s+|\s+and\s+|,|\.|$)", text, re.I)
     if m:
         lead = m.group(1).strip()
 

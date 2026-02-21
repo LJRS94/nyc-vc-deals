@@ -105,7 +105,27 @@ def health_check():
     try:
         conn = g.db
         count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
-        return jsonify({"status": "ok", "deals": count})
+        # Last successful scrape
+        last_scrape = conn.execute(
+            "SELECT finished_at, deals_new FROM scrape_logs "
+            "WHERE status = 'success' ORDER BY finished_at DESC LIMIT 1"
+        ).fetchone()
+        # Deal count trend (last 7 days vs prior 7 days)
+        recent = conn.execute(
+            "SELECT COUNT(*) FROM deals WHERE created_at >= datetime('now', '-7 days')"
+        ).fetchone()[0]
+        prior = conn.execute(
+            "SELECT COUNT(*) FROM deals WHERE created_at >= datetime('now', '-14 days') "
+            "AND created_at < datetime('now', '-7 days')"
+        ).fetchone()[0]
+        return jsonify({
+            "status": "ok",
+            "deals": count,
+            "last_scrape": dict(last_scrape) if last_scrape else None,
+            "deals_last_7d": recent,
+            "deals_prior_7d": prior,
+            "scrape_running": _scrape_status["running"],
+        })
     except Exception as e:
         return jsonify({"status": "error", "detail": str(e)}), 503
 
@@ -127,8 +147,8 @@ def auth_register():
         return jsonify({"error": "Username and password required"}), 400
     if len(username) < 3:
         return jsonify({"error": "Username must be at least 3 characters"}), 400
-    if len(password) < 4:
-        return jsonify({"error": "Password must be at least 4 characters"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
     conn = g.db
     existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
     if existing:
@@ -630,8 +650,9 @@ def _start_scheduler():
 
 @app.route("/api/scrape", methods=["POST"])
 @login_required
+@limiter.limit("2 per hour")
 def trigger_scrape():
-    """Manually trigger a background scrape (requires login)."""
+    """Manually trigger a background scrape (requires login, rate limited)."""
     if _scrape_status["running"]:
         return jsonify({"status": "already_running", **_scrape_status}), 409
     data = request.get_json(silent=True) or {}

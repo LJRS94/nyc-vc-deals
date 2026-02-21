@@ -330,12 +330,11 @@ def enrich_deals(limit: int = 200):
         # Apply updates
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [deal_id]
-        conn2 = get_connection()
-        conn2.execute(
+        conn.execute(
             f"UPDATE deals SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             values
         )
-        conn2.commit()
+        conn.commit()
         updated += 1
 
         changes = ", ".join(f"{k}={v!r:.40}" for k, v in updates.items())

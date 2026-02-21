@@ -57,9 +57,16 @@ def _random_headers() -> dict:
 
 DEFAULT_HEADERS = _random_headers()
 
-# SEC requires identification — configurable via env var
+# SEC requires identification with a real contact email
+_sec_ua = os.environ.get("SEC_USER_AGENT", "")
+if not _sec_ua or "example.com" in _sec_ua:
+    logging.getLogger(__name__).warning(
+        "SEC_USER_AGENT not set or uses example.com — SEC may block requests. "
+        "Set SEC_USER_AGENT='YourApp/1.0 (your-real-email@domain.com)'"
+    )
+    _sec_ua = _sec_ua or "NYCVCScraper/1.0 (contact@example.com)"
 SEC_HEADERS = {
-    "User-Agent": os.environ.get("SEC_USER_AGENT", "NYCVCScraper/1.0 (contact@example.com)"),
+    "User-Agent": _sec_ua,
     "Accept": "application/json,application/xml",
 }
 

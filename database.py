@@ -15,10 +15,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get(
-    "DATABASE_PATH",
-    os.path.join(os.path.dirname(__file__), "nyc_vc_deals.db")
-)
+from config import DB_PATH
 
 _STRIP_RE = re.compile(r"[^a-z0-9]")
 _BATCH_CONNS = set()  # connection ids currently in batch mode
@@ -808,6 +805,12 @@ def migrate_db(db_path: str = DB_PATH):
     2. Add company_name_normalized column
     3. Backfill normalized names for existing rows
     """
+    # Safety: backup before destructive migration
+    backup_path = db_path + ".pre_migration_backup"
+    if os.path.exists(db_path):
+        shutil.copy2(db_path, backup_path)
+        logger.info(f"Pre-migration backup saved to {backup_path}")
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 

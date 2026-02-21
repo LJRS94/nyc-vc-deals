@@ -18,6 +18,12 @@ API_PORT = int(os.environ.get("PORT", 5000))
 API_HOST = "0.0.0.0"
 SECRET_KEY = os.environ.get("SECRET_KEY")
 if not SECRET_KEY:
+    # In production (DATABASE_PATH is set to a non-local path), require SECRET_KEY
+    if os.environ.get("DATABASE_PATH") and "/opt/" in os.environ.get("DATABASE_PATH", ""):
+        raise RuntimeError(
+            "SECRET_KEY environment variable is required in production. "
+            "Set it to a random 64-character hex string."
+        )
     SECRET_KEY = secrets.token_hex(32)
     logging.getLogger(__name__).warning(
         "SECRET_KEY not set — using random key (sessions will not survive restarts)"
