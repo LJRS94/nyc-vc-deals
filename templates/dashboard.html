@@ -100,7 +100,7 @@
     /* ── Helpers ── */
     const $=v=>{if(!v&&v!==0)return"—";if(v>=1e9)return`$${(v/1e9).toFixed(1)}B`;if(v>=1e6)return`$${(v/1e6).toFixed(1)}M`;if(v>=1e3)return`$${(v/1e3).toFixed(0)}K`;return`$${v}`;};
     const SC={"Pre-Seed":"#f97316",Seed:"#22c55e","Series A":"#6366f1","Series B":"#ec4899","Series C+":"#a855f7",Unknown:"#6b7280"};
-    const CC={"AI / Machine Learning":"#818cf8",Fintech:"#34d399","Health & Biotech":"#f472b6",Cybersecurity:"#fb923c","Web3 / Crypto":"#a78bfa","Real Estate / Proptech":"#2dd4bf","Insurance / Insurtech":"#f59e0b","HR / Future of Work":"#38bdf8","Developer Tools":"#4ade80","Media & Entertainment":"#e879f9","SaaS / Enterprise":"#60a5fa","Consumer / D2C":"#fb7185","Climate / Cleantech":"#84cc16","Marketplace":"#fb923c","Other":"#6b7280"};
+    const CC={"AI / Machine Learning":"#818cf8",Fintech:"#34d399","Health & Biotech":"#f472b6",Cybersecurity:"#fb923c","Web3 / Crypto":"#a78bfa","Real Estate / Proptech":"#2dd4bf","Insurance / Insurtech":"#f59e0b","HR / Future of Work":"#38bdf8","Developer Tools":"#4ade80","Media & Entertainment":"#e879f9","SaaS / Enterprise":"#60a5fa","Consumer / D2C":"#fb7185","Climate / Cleantech":"#84cc16","Marketplace":"#fb923c","Legal Tech":"#94a3b8","Food & Agriculture":"#a3e635","Hardware / Robotics":"#f97316","Education / Edtech":"#c084fc","Logistics / Supply Chain":"#22d3ee","Gaming":"#fb7185","Quantum Computing":"#67e8f9","Space Tech":"#fbbf24","Other":"#6b7280"};
     const SRCS = {alleywatch:"🗽 AlleyWatch",sec_filing:"📋 SEC",news_article:"📰 News",de_filing:"🏛 Delaware",google_news:"🔍 Google",other:"📄 Other",ny_dos:"🏙 NY DOS"};
     const dealCompleteness = d => { let f=0,t=5; if(d.amount_usd)f++; if(d.description)f++; if(d.category)f++; if(d.date_announced)f++; if((d.firms||[]).length)f++; return Math.round(f/t*100); };
     const srcIcon = s => (SRCS[s]||"📄").split(" ")[0];
@@ -1547,7 +1547,7 @@
                           {j<d.verified_firms.length-1 && <span style={{color:"#333",margin:"0 4px"}}>·</span>}
                         </span>
                       )}</td>
-                      <td style={{textAlign:"right"}} className="mono" style={{color:(d.confidence_score||0)>=.85?"#34d399":"#f59e0b",textAlign:"right",fontSize:11}}>
+                      <td className="mono" style={{color:(d.confidence_score||0)>=.85?"#34d399":"#f59e0b",textAlign:"right",fontSize:11}}>
                         {d.confidence_score?`${(d.confidence_score*100).toFixed(0)}%`:"—"}</td>
                     </tr>
                   )}

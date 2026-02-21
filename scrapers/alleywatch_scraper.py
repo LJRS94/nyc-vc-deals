@@ -247,6 +247,9 @@ def parse_alleywatch_daily(url: str) -> List[Dict]:
             # Skip if company name is too short or looks like noise
             if len(company) < 2 or company.lower() in ("the", "this", "our", "we"):
                 continue
+            if not validate_company_name(company):
+                continue
+            company = clean_company_name(company)
 
             amount = parse_amount(amt_str)
 

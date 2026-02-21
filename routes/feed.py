@@ -44,7 +44,7 @@ def get_deal_feed():
 
     rows = conn.execute(f"""
         SELECT
-            d.id, d.company_name, d.company_description, d.stage,
+            d.id, d.company_name, d.company_description, d.company_website, d.stage,
             d.amount_usd, d.amount_disclosed, d.date_announced,
             d.source_type, d.source_url, d.confidence_score, d.raw_text,
             c.name as category,
@@ -105,6 +105,7 @@ def get_deal_feed():
             "id": r["id"],
             "company_name": r["company_name"],
             "description": r["company_description"],
+            "company_website": r["company_website"],
             "stage": r["stage"],
             "amount_usd": r["amount_usd"],
             "date_announced": r["date_announced"],
