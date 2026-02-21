@@ -74,7 +74,7 @@ def get_investors():
     firm_id = request.args.get("firm_id")
     role_filter = request.args.get("role")
     page = _safe_int(request.args.get("page", 1), 1, 1, 10000)
-    per_page = _safe_int(request.args.get("per_page", 25), 25, 1, 100)
+    per_page = _safe_int(request.args.get("per_page", 25), 25, 1, 10000)
 
     base = """
         FROM investors i
@@ -445,7 +445,7 @@ def get_portfolio():
     firm_id = request.args.get("firm_id", type=int)
     search = request.args.get("q", "")
     page = _safe_int(request.args.get("page", 1), 1, 1, 10000)
-    per_page = _safe_int(request.args.get("per_page", 50), 50, 1, 200)
+    per_page = _safe_int(request.args.get("per_page", 50), 50, 1, 10000)
 
     base = """
         FROM portfolio_companies pc

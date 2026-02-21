@@ -400,8 +400,8 @@
           fetch("/api/feed?days=9999").then(r=>r.json()),
           fetch("/api/stats").then(r=>r.json()),
           fetch("/api/firms").then(r=>r.json()),
-          fetch("/api/investors").then(r=>r.json()),
-          fetch("/api/portfolio").then(r=>r.json()),
+          fetch("/api/investors?per_page=9999").then(r=>r.json()),
+          fetch("/api/portfolio?per_page=9999").then(r=>r.json()),
           fetch("/api/me").then(r=>r.json()),
           fetch("/api/portfolio/linked").then(r=>r.json()),
           fetch("/api/feed/timeline").then(r=>r.json()),
@@ -410,8 +410,8 @@
           setDeals(feed.deals || []);
           setStats(st);
           setFirms(fi || []);
-          setInvestors(inv || []);
-          setPortfolio(port || {companies:[], firms:[], total:0});
+          setInvestors(inv.data || inv || []);
+          setPortfolio({companies: port.data||port.companies||[], firms: port.firms||[], total: port.meta?.total||0});
           setLinkedPortfolio(linked || []);
           setTimeline(tl || []);
           setSourceBreakdown(src || []);
@@ -820,10 +820,13 @@
                         <td><button className="link" onClick={e=>{e.stopPropagation();setCatF(d.category)}} style={{color:CC[d.category],fontSize:11.5,fontWeight:500}}>{d.category}</button></td>
                         <td className="mono muted" style={{fontSize:11}}>{(d.date_announced||"").slice(5)}</td>
                         <td>{(()=>{const leadPartner=(d.investors||[]).find(p=>(d.lead_firms||[]).includes(p.firm));
+                          const allFirms=d.firms||[];
                           if(leadPartner) return <React.Fragment><button className="link" onClick={e=>{e.stopPropagation();setSelInvestor(leadPartner.id)}} style={{fontSize:11.5}}>★ {leadPartner.name}</button>
                             <div style={{fontSize:9.5,color:"#4a4b60"}}>{leadPartner.firm}</div></React.Fragment>;
                           if(lead) return <React.Fragment><button className="link" onClick={e=>{e.stopPropagation();goFirm(lead)}} style={{fontSize:11.5}}>★ {lead}</button>
                             {others.length>0 && <span style={{fontSize:10,color:"#4a4b60",marginLeft:4}}>+{others.length}</span>}</React.Fragment>;
+                          if(allFirms.length) return <React.Fragment><button className="link" onClick={e=>{e.stopPropagation();goFirm(allFirms[0])}} style={{fontSize:11.5,color:"#8b8ca7"}}>{allFirms[0]}</button>
+                            {allFirms.length>1 && <span style={{fontSize:10,color:"#4a4b60",marginLeft:4}}>+{allFirms.length-1}</span>}</React.Fragment>;
                           return <span className="muted">—</span>;
                         })()}</td>
                         <td style={{color:(d.confidence_score||0)>=.9?"#22c55e":(d.confidence_score||0)>=.7?"#f59e0b":"#ef4444",textAlign:"right",fontSize:10.5,fontFamily:"'IBM Plex Mono',monospace"}}>
