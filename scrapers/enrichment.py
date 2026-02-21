@@ -318,6 +318,52 @@ def enrich_with_apollo(limit: int = APOLLO_MONTHLY_LIMIT, dry_run: bool = False)
     return stats
 
 
+# ── LinkedIn Profile Search ───────────────────────────────────
+
+def search_linkedin_profile(name: str, firm_name: str,
+                            api_key: str, cse_id: str) -> str:
+    """
+    Search Google CSE for a person's LinkedIn profile.
+    Returns LinkedIn URL, "RATE_LIMITED" sentinel, or None.
+    """
+    query = f'site:linkedin.com/in "{name}" "{firm_name}"'
+    params = {
+        "key": api_key,
+        "cx": cse_id,
+        "q": query,
+        "num": 3,
+    }
+
+    resp = fetch(
+        "https://www.googleapis.com/customsearch/v1",
+        params=params,
+        ttl=COMPANY_SEARCH_TTL,
+    )
+
+    if resp.status_code == 429:
+        logger.warning("[LinkedIn] Rate limited (429)")
+        return "RATE_LIMITED"
+
+    if resp.status_code != 200:
+        logger.debug(f"[LinkedIn] HTTP {resp.status_code} for '{name}'")
+        return None
+
+    try:
+        data = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    for item in data.get("items", []):
+        link = item.get("link", "")
+        parsed = urlparse(link)
+        # Only accept linkedin.com/in/ profile URLs
+        if ("linkedin.com" in parsed.netloc.lower()
+                and "/in/" in parsed.path.lower()):
+            return link
+
+    return None
+
+
 # ── Orchestrator ──────────────────────────────────────────────
 
 def run_web_enrichment(

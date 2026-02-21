@@ -733,12 +733,12 @@
           <div className="filters">
             <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Stage</span>
             {["All",...allStages].map(v=>{const on=stgF===v;const c=SC[v]||"#7c3aed";
-              return <button key={v} onClick={()=>setStgF(v)} className={`pill ${on?"on":""}`}
+              return <button key={v} onClick={()=>setStgF(on&&v!=="All"?"All":v)} className={`pill ${on?"on":""}`}
                 style={{borderColor:on?c+"55":"#1a1b2e",background:on?c+"14":"transparent",color:on?c:"#52536b"}}>{v}</button>;})}
             <div style={{width:1,height:16,background:"#1a1b2e"}} />
             <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Sector</span>
             {["All",...allCats].map(v=>{const on=catF===v;const c=CC[v]||"#7c3aed";
-              return <button key={v} onClick={()=>setCatF(v)} className={`pill ${on?"on":""}`}
+              return <button key={v} onClick={()=>setCatF(on&&v!=="All"?"All":v)} className={`pill ${on?"on":""}`}
                 style={{borderColor:on?c+"55":"#1a1b2e",background:on?c+"14":"transparent",color:on?c:"#52536b"}}>{(v||"").split("/")[0].trim()}</button>;})}
             <div style={{width:1,height:16,background:"#1a1b2e"}} />
             <button onClick={()=>setEarlyOnly(!earlyOnly)} className={`pill ${earlyOnly?"on":""}`}
@@ -817,7 +817,7 @@
                           <div style={{fontSize:10.5,color:"#4a4b60",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:240}}>{d.description}</div></td>
                         <td style={{textAlign:"right"}} className="mono green" ><b>{$(d.amount_usd)}</b></td>
                         <td><Badge t={d.stage} c={SC[d.stage]} /></td>
-                        <td><button className="link" onClick={e=>{e.stopPropagation();setCatF(d.category)}} style={{color:CC[d.category],fontSize:11.5,fontWeight:500}}>{d.category}</button></td>
+                        <td><button className="link" onClick={e=>{e.stopPropagation();setCatF(catF===d.category?"All":d.category)}} style={{color:CC[d.category],fontSize:11.5,fontWeight:500}}>{d.category}</button></td>
                         <td className="mono muted" style={{fontSize:11}}>{(d.date_announced||"").slice(5)}</td>
                         <td>{(()=>{const leadPartner=(d.investors||[]).find(p=>(d.lead_firms||[]).includes(p.firm));
                           const allFirms=d.firms||[];
