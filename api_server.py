@@ -399,7 +399,7 @@ def _generate_notifications(conn):
         logger.info(f"Generated {count} notifications")
 
 
-def _run_scrape_background():
+def _run_scrape_background(days_back: int = 30):
     """Run a scrape in a background thread."""
     if not _scrape_lock.acquire(blocking=False):
         return  # already running
@@ -457,12 +457,12 @@ def _run_scrape_background():
             logger.warning(f"QC init warning: {e}")
 
         # Run the main scrapers (all funnel through validate_deal() quality gate)
-        run_news_scraper(days_back=180)
-        run_alleywatch_scraper(days_back=180)
+        run_news_scraper(days_back=days_back)
+        run_alleywatch_scraper(days_back=days_back)
 
         # SEC EDGAR Form D filings (free public data)
         try:
-            run_sec_scraper(days_back=180)
+            run_sec_scraper(days_back=days_back)
         except Exception as e:
             logger.warning(f"SEC scraper warning: {e}")
 
@@ -634,8 +634,10 @@ def trigger_scrape():
     """Manually trigger a background scrape (requires login)."""
     if _scrape_status["running"]:
         return jsonify({"status": "already_running", **_scrape_status}), 409
-    threading.Thread(target=_run_scrape_background, daemon=True).start()
-    return jsonify({"status": "started", "message": "Scrape started in background"})
+    data = request.get_json(silent=True) or {}
+    days_back = min(int(data.get("days_back", 30)), 730)
+    threading.Thread(target=_run_scrape_background, args=(days_back,), daemon=True).start()
+    return jsonify({"status": "started", "message": f"Scrape started (days_back={days_back})"})
 
 
 @app.route("/api/scrape/status", methods=["GET"])
