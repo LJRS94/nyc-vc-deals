@@ -792,23 +792,28 @@ def _generate_diverse_queries() -> List[str]:
             queries.append(f"{loc} {sector} startup funding")
     # Amount-based queries (by year to catch historical deals)
     for loc in locations[:2]:
-        for year in ["2024", "2025", "2026"]:
+        for year in ["2023", "2024", "2025", "2026"]:
             queries.append(f"{loc} startup raises million {year}")
             queries.append(f"{loc} startup funding round {year}")
         queries.append(f"{loc} startup raises $")
 
-    # Historical 2024 queries — quarter-specific to maximize Bing coverage
-    quarters_2024 = [
+    # Historical quarter-specific queries to maximize Bing coverage
+    quarters_historical = [
+        ("Q1 2023", "January February March 2023"),
+        ("Q2 2023", "April May June 2023"),
+        ("Q3 2023", "July August September 2023"),
+        ("Q4 2023", "October November December 2023"),
         ("Q1 2024", "January February March 2024"),
         ("Q2 2024", "April May June 2024"),
         ("Q3 2024", "July August September 2024"),
         ("Q4 2024", "October November December 2024"),
     ]
     for loc in locations[:2]:
-        for _, months in quarters_2024:
+        for _, months in quarters_historical:
             queries.append(f"{loc} startup raises funding {months}")
-        # Sector × year for 2024
+        # Sector × year for 2023 and 2024
         for sector in sectors[:10]:
+            queries.append(f"{loc} {sector} startup funding 2023")
             queries.append(f"{loc} {sector} startup funding 2024")
     # Publication-scoped queries
     for site in ["techcrunch.com", "forbes.com", "venturebeat.com",
