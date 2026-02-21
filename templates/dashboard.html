@@ -349,6 +349,15 @@
       const [stgF, setStgF] = useState("All");
       const [catF, setCatF] = useState("All");
       const [monthF, setMonthF] = useState([]);
+      const [monthOpen, setMonthOpen] = useState(false);
+      const monthRef = useRef(null);
+      const toggleMonth = m => setMonthF(prev => prev.includes(m) ? prev.filter(x=>x!==m) : [...prev, m]);
+      useEffect(() => {
+        if (!monthOpen) return;
+        const handler = e => { if (monthRef.current && !monthRef.current.contains(e.target)) setMonthOpen(false); };
+        document.addEventListener("mousedown", handler);
+        return () => document.removeEventListener("mousedown", handler);
+      }, [monthOpen]);
       const [sort, setSort] = useState({f:"amount_usd",d:"desc"});
       const [earlyOnly, setEarlyOnly] = useState(true);
       const [fSort, setFSort] = useState({f:"total_invested",d:"desc"});
@@ -738,45 +747,34 @@
             </button>
             <div style={{width:1,height:16,background:"#1a1b2e"}} />
             <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Month</span>
-            {(() => {
-              const [monthOpen, setMonthOpen] = useState(false);
-              const toggleMonth = m => setMonthF(prev => prev.includes(m) ? prev.filter(x=>x!==m) : [...prev, m]);
-              const ref = useRef(null);
-              useEffect(() => {
-                if (!monthOpen) return;
-                const handler = e => { if (ref.current && !ref.current.contains(e.target)) setMonthOpen(false); };
-                document.addEventListener("mousedown", handler);
-                return () => document.removeEventListener("mousedown", handler);
-              }, [monthOpen]);
-              return <div ref={ref} style={{position:"relative",display:"inline-block"}}>
-                <button onClick={()=>setMonthOpen(!monthOpen)}
-                  style={{padding:"2px 9px",borderRadius:3,fontSize:10.5,fontWeight:monthF.length?700:500,
-                    border:`1px solid ${monthF.length?"#3b82f655":"#1a1b2e"}`,
-                    background:monthF.length?"#3b82f614":"transparent",
-                    color:monthF.length?"#60a5fa":"#52536b",cursor:"pointer",outline:"none"}}>
-                  {monthF.length===0?"All Months":monthF.length===1?monthF[0]:`${monthF.length} months`}
-                  <span style={{marginLeft:4,fontSize:8}}>{monthOpen?"▲":"▼"}</span>
-                </button>
-                {monthOpen && <div style={{position:"absolute",top:"100%",left:0,marginTop:4,background:"#12131f",
-                  border:"1px solid #1a1b2e",borderRadius:6,padding:6,zIndex:50,maxHeight:240,overflowY:"auto",
-                  minWidth:140,boxShadow:"0 8px 24px rgba(0,0,0,.5)"}}>
-                  {monthF.length>0 && <div onClick={()=>setMonthF([])}
-                    style={{padding:"3px 8px",fontSize:10,color:"#f87171",cursor:"pointer",borderBottom:"1px solid #1a1b2e",marginBottom:4}}>
-                    Clear months</div>}
-                  {allMonths.map(m => {
-                    const on = monthF.includes(m);
-                    return <div key={m} onClick={()=>toggleMonth(m)}
-                      style={{padding:"3px 8px",fontSize:10.5,cursor:"pointer",borderRadius:3,display:"flex",alignItems:"center",gap:6,
-                        background:on?"#3b82f614":"transparent",color:on?"#60a5fa":"#8b8ca7"}}>
-                      <span style={{width:14,height:14,borderRadius:3,border:`1px solid ${on?"#3b82f6":"#2a2b3e"}`,
-                        background:on?"#3b82f6":"transparent",display:"inline-flex",alignItems:"center",justifyContent:"center",
-                        fontSize:9,color:"#fff",flexShrink:0}}>{on?"✓":""}</span>
-                      {m}
-                    </div>;
-                  })}
-                </div>}
-              </div>;
-            })()}
+            <div ref={monthRef} style={{position:"relative",display:"inline-block"}}>
+              <button onClick={()=>setMonthOpen(!monthOpen)}
+                style={{padding:"2px 9px",borderRadius:3,fontSize:10.5,fontWeight:monthF.length?700:500,
+                  border:`1px solid ${monthF.length?"#3b82f655":"#1a1b2e"}`,
+                  background:monthF.length?"#3b82f614":"transparent",
+                  color:monthF.length?"#60a5fa":"#52536b",cursor:"pointer",outline:"none"}}>
+                {monthF.length===0?"All Months":monthF.length===1?monthF[0]:`${monthF.length} months`}
+                <span style={{marginLeft:4,fontSize:8}}>{monthOpen?"▲":"▼"}</span>
+              </button>
+              {monthOpen && <div style={{position:"absolute",top:"100%",left:0,marginTop:4,background:"#12131f",
+                border:"1px solid #1a1b2e",borderRadius:6,padding:6,zIndex:50,maxHeight:240,overflowY:"auto",
+                minWidth:140,boxShadow:"0 8px 24px rgba(0,0,0,.5)"}}>
+                {monthF.length>0 && <div onClick={()=>{setMonthF([]);setMonthOpen(false);}}
+                  style={{padding:"3px 8px",fontSize:10,color:"#f87171",cursor:"pointer",borderBottom:"1px solid #1a1b2e",marginBottom:4}}>
+                  Clear months</div>}
+                {allMonths.map(m => {
+                  const on = monthF.includes(m);
+                  return <div key={m} onClick={()=>toggleMonth(m)}
+                    style={{padding:"3px 8px",fontSize:10.5,cursor:"pointer",borderRadius:3,display:"flex",alignItems:"center",gap:6,
+                      background:on?"#3b82f614":"transparent",color:on?"#60a5fa":"#8b8ca7"}}>
+                    <span style={{width:14,height:14,borderRadius:3,border:`1px solid ${on?"#3b82f6":"#2a2b3e"}`,
+                      background:on?"#3b82f6":"transparent",display:"inline-flex",alignItems:"center",justifyContent:"center",
+                      fontSize:9,color:"#fff",flexShrink:0}}>{on?"✓":""}</span>
+                    {m}
+                  </div>;
+                })}
+              </div>}
+            </div>
             {user && (prefs.sectors?.length || prefs.stages?.length) && (
               <button onClick={()=>setMyFeedOn(!myFeedOn)} className={`pill ${myFeedOn?"on":""}`}
                 style={{borderColor:myFeedOn?"#a78bfa55":"#1a1b2e",background:myFeedOn?"#a78bfa14":"transparent",color:myFeedOn?"#a78bfa":"#52536b",fontWeight:myFeedOn?700:500}}>

@@ -137,38 +137,37 @@ Rules:
 - IMPORTANT for stage: Try hard to determine the stage. Look for keywords like "seed", "Series A/B/C", "pre-seed", "angel", "growth", etc. If no explicit stage keyword exists but the amount is known, infer: <$500K = Pre-Seed, <$3M = Seed, <$20M = Series A, <$80M = Series B, >=$80M = Series C+. Only use "Unknown" as a last resort."""
 
 
-def extract_deals_batch(articles: List[Dict], max_workers: int = 5) -> Dict[str, Optional[Dict]]:
+def extract_deals_batch(articles: List[Dict], max_workers: int = 5) -> List[Optional[Dict]]:
     """
     Extract deals from multiple articles in parallel.
     articles: list of dicts with 'title' and 'text' keys.
-    Returns: dict mapping title -> extraction result (or None).
+    Returns: list of extraction results in same order as input (None for failures).
     429 rate limits fail fast and fall back to regex extraction.
     """
     client = _get_client()
     if not client:
-        return {}
+        return [None] * len(articles)
 
-    results = {}
+    results = [None] * len(articles)
 
-    def _extract(article):
+    def _extract(idx, article):
         title = article.get("title", "")
         text = article.get("text", "")
-        return title, extract_deal_from_text(title, text)
+        return idx, extract_deal_from_text(title, text)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_extract, a): a for a in articles}
+        futures = {pool.submit(_extract, i, a): i for i, a in enumerate(articles)}
         for future in as_completed(futures):
             try:
-                title, result = future.result()
-                results[title] = result
+                idx, result = future.result()
+                results[idx] = result
             except Exception as e:
-                article = futures[future]
+                idx = futures[future]
                 logger.debug("Batch extraction failed for '%s': %s",
-                             article.get("title", "")[:60], e)
-                results[article.get("title", "")] = None
+                             articles[idx].get("title", "")[:60], e)
 
     logger.info("LLM batch extraction: %d/%d succeeded",
-                sum(1 for v in results.values() if v), len(articles))
+                sum(1 for v in results if v), len(articles))
     return results
 
 

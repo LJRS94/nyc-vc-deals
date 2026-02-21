@@ -323,6 +323,11 @@ def init_db(db_path: str = DB_PATH):
         conn.commit()
         logger.info(f"Migrated investors: added name_normalized, backfilled {len(rows)} rows")
 
+    # Add missing indexes for common joins
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deals_lead_investor ON deals(lead_investor_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_investors_firm ON investors(firm_id)")
+    conn.commit()
+
     # Ensure index exists (covers both fresh DBs and migrated ones)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_investor_name_norm "

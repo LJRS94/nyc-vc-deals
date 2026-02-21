@@ -1023,17 +1023,14 @@ def run_news_scraper(days_back: int = 14):
             {"title": title, "text": full_text}
             for title, url, full_text, source_type, date, nyc_ok in enriched
         ]
-        llm_results = extract_deals_batch(llm_articles) if llm_articles else {}
-        logger.info(f"LLM extracted {sum(1 for v in llm_results.values() if v)}/{len(llm_articles)} articles")
-
-        # Build index-based lookup to avoid title collision (duplicate titles overwrite in dict)
-        llm_results_list = [llm_results.get(a["title"]) for a in llm_articles]
+        llm_results = extract_deals_batch(llm_articles) if llm_articles else []
+        logger.info(f"LLM extracted {sum(1 for v in llm_results if v)}/{len(llm_articles)} articles")
 
         # Batch insert deals (DB only, no HTTP)
         with batch_connection() as conn:
             for i, (title, url, full_text, source_type, date, nyc_ok) in enumerate(enriched):
                 try:
-                    llm_result = llm_results_list[i] if i < len(llm_results_list) else None
+                    llm_result = llm_results[i] if i < len(llm_results) else None
                     deal_id = process_deal(conn, title, url, full_text,
                                            source_type=source_type, date_announced=date,
                                            nyc_confirmed=nyc_ok,
