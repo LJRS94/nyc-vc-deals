@@ -30,7 +30,8 @@ from scrapers.alleywatch_scraper import run_alleywatch_scraper
 from scrapers.llm_extract import extract_deal_from_text, validate_company_name, clean_company_name
 from scrapers.enrichment import run_web_enrichment
 from scrapers.additional_sources import run_additional_sources
-from config import SCRAPE_DEFAULT_DAYS_BACK, GOOGLE_BATCH_SIZE, GOOGLE_BATCH_DAYS_BACK
+from scrapers.enrichment_sources import run_enrichment_cascade
+from config import SCRAPE_DEFAULT_DAYS_BACK, GOOGLE_BATCH_SIZE, GOOGLE_BATCH_DAYS_BACK, ENABLED_CITIES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,6 +108,14 @@ def print_summary():
         "recent_deals": [],
     }
 
+    # By city
+    stats["by_city"] = {}
+    rows = conn.execute(
+        "SELECT city, COUNT(*) as cnt FROM deals GROUP BY city ORDER BY cnt DESC"
+    ).fetchall()
+    for row in rows:
+        stats["by_city"][row["city"] or "Unknown"] = row["cnt"]
+
     # By stage
     rows = conn.execute(
         "SELECT stage, COUNT(*) as cnt FROM deals GROUP BY stage ORDER BY cnt DESC"
@@ -145,6 +154,9 @@ def print_summary():
     logger.info(f"  Deals:     {stats['total_deals']}")
     logger.info(f"  Firms:     {stats['total_firms']}")
     logger.info(f"  Investors: {stats['total_investors']}")
+    logger.info(f"\n  By City:")
+    for city, count in stats["by_city"].items():
+        logger.info(f"    {city}: {count}")
     logger.info(f"\n  By Stage:")
     for stage, count in stats["by_stage"].items():
         logger.info(f"    {stage}: {count}")
@@ -534,6 +546,8 @@ def main():
 
     scrape_p = sub.add_parser("scrape", help="Run all scrapers")
     scrape_p.add_argument("--days", type=int, default=SCRAPE_DEFAULT_DAYS_BACK, help="Days to look back")
+    scrape_p.add_argument("--cities", type=str, default=None,
+                          help="Comma-separated cities to scrape (default: all enabled)")
     scrape_p.add_argument("--clear-cache", action="store_true",
                           help="Clear HTTP cache before scraping")
 
@@ -572,6 +586,16 @@ def main():
     team_p.add_argument("--limit", type=int, default=None, help="Max firms to scrape")
     team_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
 
+    cascade_p = sub.add_parser("enrich-cascade",
+                               help="Run enrichment cascade (Clearbit Autocomplete -> KG -> YC -> Wikipedia -> Wikidata)")
+    cascade_p.add_argument("--skip", nargs="*", default=[],
+                           help="Sources to skip (clearbit_autocomplete google_kg yc_oss wikipedia wikidata)")
+    cascade_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
+    cascade_p.add_argument("--clearbit-limit", type=int, default=500, help="Max Clearbit Autocomplete queries")
+    cascade_p.add_argument("--kg-limit", type=int, default=500, help="Max Google KG queries")
+    cascade_p.add_argument("--wikipedia-limit", type=int, default=200, help="Max Wikipedia queries")
+    cascade_p.add_argument("--wikidata-limit", type=int, default=200, help="Max Wikidata queries")
+
     backfill_p = sub.add_parser("backfill-investors", help="Backfill investor records from deal metadata")
     backfill_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
 
@@ -595,6 +619,10 @@ def main():
         print("✓ Firms seeded")
 
     elif args.command == "scrape":
+        if args.cities:
+            import config
+            config.ENABLED_CITIES = [c.strip() for c in args.cities.split(",") if c.strip()]
+            logger.info(f"City filter: {config.ENABLED_CITIES}")
         if args.clear_cache:
             clear_cache()
             print("✓ HTTP cache cleared")
@@ -648,6 +676,19 @@ def main():
             f"{stats['team_members_found']} members found, "
             f"{stats['investors_created']} investors created"
         )
+
+    elif args.command == "enrich-cascade":
+        results = run_enrichment_cascade(
+            skip=args.skip or None,
+            dry_run=args.dry_run,
+            clearbit_limit=args.clearbit_limit,
+            kg_limit=args.kg_limit,
+            wikipedia_limit=args.wikipedia_limit,
+            wikidata_limit=args.wikidata_limit,
+        )
+        print(f"Cascade complete: {len(results)} sources run")
+        for source, stats in results.items():
+            print(f"  {source}: {stats}")
 
     elif args.command == "backfill-investors":
         stats = backfill_investors_from_metadata(dry_run=args.dry_run)
