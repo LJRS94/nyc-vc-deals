@@ -587,14 +587,16 @@ def main():
     team_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
 
     cascade_p = sub.add_parser("enrich-cascade",
-                               help="Run enrichment cascade (Clearbit Autocomplete -> KG -> YC -> Wikipedia -> Wikidata)")
+                               help="Run enrichment cascade (Clearbit -> KG -> YC -> Wikipedia -> Wikidata -> Domain Probe -> RawText Investors)")
     cascade_p.add_argument("--skip", nargs="*", default=[],
-                           help="Sources to skip (clearbit_autocomplete google_kg yc_oss wikipedia wikidata)")
+                           help="Sources to skip (clearbit_autocomplete google_kg yc_oss wikipedia wikidata domain_probe rawtext_investors)")
     cascade_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
     cascade_p.add_argument("--clearbit-limit", type=int, default=500, help="Max Clearbit Autocomplete queries")
     cascade_p.add_argument("--kg-limit", type=int, default=500, help="Max Google KG queries")
     cascade_p.add_argument("--wikipedia-limit", type=int, default=200, help="Max Wikipedia queries")
-    cascade_p.add_argument("--wikidata-limit", type=int, default=200, help="Max Wikidata queries")
+    cascade_p.add_argument("--wikidata-limit", type=int, default=500, help="Max Wikidata queries")
+    cascade_p.add_argument("--probe-limit", type=int, default=500, help="Max domain probe attempts")
+    cascade_p.add_argument("--rawtext-limit", type=int, default=500, help="Max raw text investor extractions")
 
     backfill_p = sub.add_parser("backfill-investors", help="Backfill investor records from deal metadata")
     backfill_p.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
@@ -685,6 +687,8 @@ def main():
             kg_limit=args.kg_limit,
             wikipedia_limit=args.wikipedia_limit,
             wikidata_limit=args.wikidata_limit,
+            probe_limit=args.probe_limit,
+            rawtext_limit=args.rawtext_limit,
         )
         print(f"Cascade complete: {len(results)} sources run")
         for source, stats in results.items():

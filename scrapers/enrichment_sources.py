@@ -1,5 +1,5 @@
 """
-Enrichment cascade: 5 free/low-cost data sources for filling deal gaps.
+Enrichment cascade: 7 free/low-cost data sources for filling deal gaps.
 
 Sources (run in dependency order):
   1. Clearbit Autocomplete — name -> domain (NO key needed)
@@ -7,6 +7,8 @@ Sources (run in dependency order):
   3. YC-OSS Static Dataset — bulk match, website + description (NO key)
   4. Wikipedia API — descriptions (NO key)
   5. Wikidata SPARQL — website + investors (NO key)
+  6. Domain Probe — HTTP HEAD on {slug}.com/.io/.ai/.co (NO key)
+  7. Raw Text Investor Extraction — regex parse deal raw_text (local, NO network)
 
 The cascade order matters: Clearbit gets domains first, then later sources
 can use those domains or fill remaining gaps.
@@ -18,7 +20,9 @@ import json
 import logging
 from urllib.parse import urlparse, quote
 
-from database import get_connection, upsert_deal_metadata, upsert_investor, link_deal_investor
+import requests
+
+from database import get_connection, upsert_deal_metadata, upsert_investor, link_deal_investor, upsert_firm
 from fetcher import fetch
 from scrapers.enrichment import DOMAIN_BLOCKLIST, _is_blocked_url
 from config import (
@@ -720,6 +724,327 @@ def enrich_wikidata(limit: int = 200, dry_run: bool = False) -> dict:
     return stats
 
 
+# ── Source 6: Domain Probing ─────────────────────────────────────
+
+_SLUG_RE = re.compile(r"[^a-z0-9]")
+_PROBE_TLDS = (".com", ".io", ".ai", ".co")
+_PARKING_DOMAINS = {
+    "sedoparking.com", "hugedomains.com", "dan.com", "afternic.com",
+    "godaddy.com", "bodis.com", "parkingcrew.net", "above.com",
+    "undeveloped.com", "domainmarket.com", "namesilo.com",
+}
+
+
+def _name_to_domain_slug(name: str) -> str | None:
+    """Strip non-alphanumeric, lowercase. Return None if slug too short/long."""
+    slug = _SLUG_RE.sub("", (name or "").lower())
+    if len(slug) < 2 or len(slug) > 40:
+        return None
+    return slug
+
+
+def _probe_domain(domain: str) -> dict | None:
+    """
+    HTTP HEAD probe. Returns response info dict if domain is live (200/301/302),
+    else None. Uses raw requests (not cached fetch) — probes are disposable.
+    """
+    try:
+        r = requests.head(
+            f"https://{domain}",
+            timeout=5,
+            allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NYCVCScraper/1.0)"},
+        )
+    except (requests.RequestException, OSError):
+        return None
+
+    if r.status_code not in (200, 301, 302):
+        return None
+
+    # Reject tiny responses (parking pages often have minimal content)
+    cl = r.headers.get("Content-Length")
+    if cl and int(cl) < 1024:
+        return None
+
+    # Reject known parking domains in final URL
+    final_domain = urlparse(r.url).netloc.lower().lstrip("www.")
+    if any(final_domain == p or final_domain.endswith("." + p) for p in _PARKING_DOMAINS):
+        return None
+
+    # Reject known parking servers
+    server = (r.headers.get("Server") or "").lower()
+    if any(p in server for p in ("parking", "sedoparking", "bodis")):
+        return None
+
+    return {"url": r.url, "status": r.status_code, "domain": final_domain}
+
+
+def enrich_domain_probe(limit: int = 500, dry_run: bool = False) -> dict:
+    """
+    For each deal without a website, try {slug}.com/.io/.ai/.co via HTTP HEAD.
+    Accept if live and not a parking page.
+    """
+    logger.info("=" * 50)
+    logger.info("[Domain Probe] Starting domain probing")
+
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT d.id, d.company_name FROM deals d
+           LEFT JOIN deal_metadata dm ON d.id = dm.deal_id AND dm.key = 'domain_probe_enriched'
+           WHERE d.company_website IS NULL
+             AND dm.value IS NULL
+           ORDER BY d.created_at DESC
+           LIMIT ?""",
+        (limit,)
+    ).fetchall()
+
+    if not rows:
+        logger.info("[Domain Probe] No deals need domain probing")
+        return {"probed": 0, "found": 0, "no_match": 0}
+
+    logger.info(f"[Domain Probe] Probing {len(rows)} deals (dry_run={dry_run})")
+    stats = {"probed": 0, "found": 0, "no_match": 0}
+
+    for i, row in enumerate(rows):
+        deal_id = row["id"]
+        name = row["company_name"]
+        slug = _name_to_domain_slug(name)
+
+        if not slug:
+            stats["no_match"] += 1
+            if not dry_run:
+                upsert_deal_metadata(conn, deal_id, "domain_probe_enriched", "no_match")
+            continue
+
+        stats["probed"] += 1
+        found = False
+
+        for tld in _PROBE_TLDS:
+            domain = slug + tld
+            result = _probe_domain(domain)
+            if not result:
+                continue
+
+            # Check final URL against main blocklist
+            if _is_blocked_url(result["url"]):
+                continue
+
+            website = f"https://{domain}"
+            logger.info(f"[Domain Probe] {name} -> {website}")
+            if not dry_run:
+                conn.execute(
+                    "UPDATE deals SET company_website = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (website, deal_id)
+                )
+                upsert_deal_metadata(conn, deal_id, "domain_probe_enriched", "yes")
+            stats["found"] += 1
+            found = True
+            break
+
+        if not found:
+            stats["no_match"] += 1
+            if not dry_run:
+                upsert_deal_metadata(conn, deal_id, "domain_probe_enriched", "no_match")
+
+        if not dry_run and (i + 1) % 20 == 0:
+            conn.commit()
+
+        time.sleep(0.3)
+
+    if not dry_run:
+        conn.commit()
+
+    logger.info(
+        f"[Domain Probe] Done: {stats['probed']} probed, "
+        f"{stats['found']} found, {stats['no_match']} no_match"
+    )
+    return stats
+
+
+# ── Source 7: Raw Text Investor Extraction ──────────────────────
+
+_VC_SUFFIXES = {
+    "capital", "ventures", "partners", "venture partners", "management",
+    "advisors", "group", "fund", "invest", "investments", "equity",
+    "holdings", "labs", "studio", "studios", "accelerator",
+}
+
+# Regex patterns to extract investor/firm names from news text
+_INVESTOR_PATTERNS = [
+    # "led by {Firm}"
+    re.compile(r"led\s+by\s+([A-Z][^.!?\n]{2,80})", re.IGNORECASE),
+    # "backed by {Firm}"
+    re.compile(r"backed\s+by\s+([A-Z][^.!?\n]{2,80})", re.IGNORECASE),
+    # "participation from {Firms}"
+    re.compile(r"participation\s+from\s+([A-Z][^.!?\n]{2,80})", re.IGNORECASE),
+    # "investors include {Firms}"
+    re.compile(r"investors\s+include\s+([A-Z][^.!?\n]{2,80})", re.IGNORECASE),
+    # "Series X from {Firms}"
+    re.compile(r"Series\s+[A-Z]\d?\s+from\s+([A-Z][^.!?\n]{2,80})", re.IGNORECASE),
+    # "raised $X from {Firms}"
+    re.compile(r"raised\s+\$[\d,.]+[MBK]?\s+from\s+([A-Z][^.!?\n]{2,80})", re.IGNORECASE),
+    # "$XM From {Firms}" (headline style)
+    re.compile(r"\$[\d,.]+[MBK]?\s+[Ff]rom\s+([A-Z][^.!?\n]{2,80})", re.IGNORECASE),
+    # "funding from {Firms}" / "investment from {Firms}"
+    re.compile(r"(?:funding|investment)\s+from\s+([A-Z][^.!?\n]{2,80})", re.IGNORECASE),
+]
+
+_SPLIT_RE = re.compile(r"\s*(?:,\s*and\s+|,\s*|\s+and\s+|\s*&\s*)\s*")
+
+
+def _split_firm_names(raw: str) -> list[str]:
+    """Split a matched string on comma / and / & separators."""
+    # Stop at sentence-ending punctuation
+    raw = re.split(r"[.!?;]", raw)[0]
+    parts = _SPLIT_RE.split(raw.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _truncate_firm_name(name: str) -> str:
+    """Cap at 5 words; stop at a VC suffix word to prevent over-capture."""
+    words = name.split()
+    result = []
+    for w in words:
+        result.append(w)
+        if w.lower().rstrip(".,;") in _VC_SUFFIXES:
+            break
+        if len(result) >= 5:
+            break
+    return " ".join(result)
+
+
+def _has_vc_suffix(name: str) -> bool:
+    """Check if name contains a VC-related suffix word."""
+    lower = name.lower()
+    return any(s in lower for s in _VC_SUFFIXES)
+
+
+def enrich_rawtext_investors(limit: int = 500, dry_run: bool = False) -> dict:
+    """
+    Parse deal raw_text (news articles) to extract investor/firm names.
+    Local processing, no network calls.
+    """
+    logger.info("=" * 50)
+    logger.info("[RawText Investors] Starting investor extraction from raw_text")
+
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT d.id, d.company_name, d.raw_text FROM deals d
+           LEFT JOIN deal_metadata dm ON d.id = dm.deal_id AND dm.key = 'rawtext_investors_extracted'
+           WHERE d.raw_text IS NOT NULL AND d.raw_text != ''
+             AND dm.value IS NULL
+             AND NOT EXISTS (
+                 SELECT 1 FROM deal_investors di WHERE di.deal_id = d.id
+             )
+           ORDER BY d.created_at DESC
+           LIMIT ?""",
+        (limit,)
+    ).fetchall()
+
+    if not rows:
+        logger.info("[RawText Investors] No deals need raw text investor extraction")
+        return {"scanned": 0, "deals_with_investors": 0, "investors_found": 0, "no_investors": 0}
+
+    logger.info(f"[RawText Investors] Scanning {len(rows)} deals (dry_run={dry_run})")
+    stats = {"scanned": 0, "deals_with_investors": 0, "investors_found": 0, "no_investors": 0}
+
+    # Pre-load known firm names for cross-reference
+    known_firms = set()
+    for firm_row in conn.execute("SELECT LOWER(name) as name FROM firms").fetchall():
+        known_firms.add(firm_row["name"])
+
+    for i, row in enumerate(rows):
+        deal_id = row["id"]
+        company_name = row["company_name"]
+        raw_text = row["raw_text"]
+        stats["scanned"] += 1
+
+        company_norm = _normalize_for_match(company_name)
+
+        # Extract candidate investor names from all patterns
+        candidates = set()
+        for pattern in _INVESTOR_PATTERNS:
+            for match in pattern.finditer(raw_text):
+                raw_match = match.group(1)
+                for name in _split_firm_names(raw_match):
+                    truncated = _truncate_firm_name(name)
+                    candidates.add(truncated)
+
+        # Validate candidates
+        valid_investors = []
+        for cand in candidates:
+            cand = cand.strip().strip(",").strip(".")
+
+            # Length filter
+            if len(cand) < 3 or len(cand) > 60:
+                continue
+
+            # Reject if starts with junk words
+            lower = cand.lower()
+            if lower.startswith("a ") or lower.startswith("the ") or lower.startswith("an "):
+                continue
+
+            # Skip if name matches the deal's own company
+            if _normalize_for_match(cand) == company_norm:
+                continue
+
+            # Must be a known firm OR have a VC suffix
+            is_known = cand.lower() in known_firms
+            has_suffix = _has_vc_suffix(cand)
+            if not is_known and not has_suffix:
+                continue
+
+            valid_investors.append((cand, is_known))
+
+        if valid_investors:
+            stats["deals_with_investors"] += 1
+            stats["investors_found"] += len(valid_investors)
+            logger.info(
+                f"[RawText Investors] {company_name} -> "
+                f"{len(valid_investors)} investors: {', '.join(v[0] for v in valid_investors[:3])}"
+            )
+
+            if not dry_run:
+                for inv_name, is_known in valid_investors:
+                    try:
+                        # Look up or create firm for recognized VC names
+                        firm_id = None
+                        if is_known:
+                            firm_row = conn.execute(
+                                "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
+                                (inv_name,)
+                            ).fetchone()
+                            firm_id = firm_row["id"] if firm_row else None
+                        elif _has_vc_suffix(inv_name):
+                            # Create new firm for names with VC suffixes
+                            firm_id = upsert_firm(conn, inv_name)
+
+                        inv_id = upsert_investor(conn, name=inv_name, firm_id=firm_id)
+                        link_deal_investor(conn, deal_id, inv_id)
+                    except Exception as e:
+                        logger.debug(f"[RawText Investors] Failed to create investor '{inv_name}': {e}")
+
+                upsert_deal_metadata(conn, deal_id, "rawtext_investors_extracted", "yes")
+        else:
+            stats["no_investors"] += 1
+            if not dry_run:
+                upsert_deal_metadata(conn, deal_id, "rawtext_investors_extracted", "no_investors")
+
+        if not dry_run and (i + 1) % 50 == 0:
+            conn.commit()
+
+    if not dry_run:
+        conn.commit()
+
+    logger.info(
+        f"[RawText Investors] Done: {stats['scanned']} scanned, "
+        f"{stats['deals_with_investors']} deals with investors, "
+        f"{stats['investors_found']} investors found, "
+        f"{stats['no_investors']} no investors"
+    )
+    return stats
+
+
 # ── Cascade Orchestrator ────────────────────────────────────────
 
 
@@ -729,11 +1054,14 @@ def run_enrichment_cascade(
     clearbit_limit: int = 500,
     kg_limit: int = 500,
     wikipedia_limit: int = 200,
-    wikidata_limit: int = 200,
+    wikidata_limit: int = 500,
+    probe_limit: int = 500,
+    rawtext_limit: int = 500,
 ) -> dict:
     """
     Run all enrichment sources in cascade order.
     Sources: clearbit_autocomplete -> google_kg -> yc_oss -> wikipedia -> wikidata
+             -> domain_probe -> rawtext_investors
     """
     skip = set(s.lower().replace("-", "_") for s in (skip or []))
     results = {}
@@ -752,6 +1080,8 @@ def run_enrichment_cascade(
         ("yc_oss", lambda: enrich_yc_oss(dry_run=dry_run)),
         ("wikipedia", lambda: enrich_wikipedia(limit=wikipedia_limit, dry_run=dry_run)),
         ("wikidata", lambda: enrich_wikidata(limit=wikidata_limit, dry_run=dry_run)),
+        ("domain_probe", lambda: enrich_domain_probe(limit=probe_limit, dry_run=dry_run)),
+        ("rawtext_investors", lambda: enrich_rawtext_investors(limit=rawtext_limit, dry_run=dry_run)),
     ]
 
     for name, fn in sources:
