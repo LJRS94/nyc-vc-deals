@@ -1388,15 +1388,31 @@ _INVESTOR_FIRM_KEYWORDS = (
     "invest", "vc", "advisors", "management", "equity", "holdings",
     "accelerator", "studio", "angels", "catalyst", "syndicate",
     "coalition", "bank", "pension", " inc", " llc", " ltd",
-    "trading", "manufacturer",
+    "trading", "manufacturer", "combinator", "a16z", "growth",
+    "global", "associates", "enterprise", "technology", "corporation",
+    "residential", "hyundai", "aramco", "reuters", "sachs",
+    "perkins", "atlantic", "alpha", "reserve", "life insurance",
 )
 
-# Matches person names: "First Last", "First M. Last", "Sam Bankman-Fried"
-# Allows for accented chars, hyphens, apostrophes, ALL CAPS names
+# Well-known VC firms / orgs that look like person names (no keyword match)
+_KNOWN_FIRM_NAMES = {
+    "goldman sachs", "kleiner perkins", "general atlantic", "guardian life",
+    "high alpha", "resilience reserve", "sequoia china", "silicon valley quad",
+    "twelve below", "andreessen horowitz", "benchmark", "lightspeed",
+    "greylock", "accel", "bessemer", "battery", "coatue", "ribbit",
+    "greenoaks", "altimeter", "dragoneer", "lone pine", "d1",
+}
+
+# Matches person names: "First Last", "First M. Last", "First Middle Last",
+# "First Middle Middle Last", "Sam Bankman-Fried".
+# Allows accented chars, hyphens, apostrophes, ALL CAPS.
 _PERSON_NAME_RE = re.compile(
-    r"^[A-ZÀ-Ü][a-zà-ü\'-]+\s+(?:[A-ZÀ-Ü]\.?\s+)?[A-ZÀ-Ü][A-Za-zà-ü\'-]+(?:\s+(?:Jr|Sr|III?|IV)\.?)?$"
-    r"|^[A-Z][A-Z]+\s+[A-Z][A-Z]+$"  # ALL CAPS names like "LARS JOHANSSON"
-    r"|^[A-Z][A-Z]\s+[A-Z][a-z]"     # "DJ Seo" style
+    r"^[A-ZÀ-Ü][a-zà-ü\'-]+\s+"                         # First name
+    r"(?:[A-ZÀ-Ü][a-zà-ü\'-]*\.?\s+){0,2}"              # 0-2 middle names/initials
+    r"[A-ZÀ-Ü][A-Za-zà-ü\'-]+"                           # Last name
+    r"(?:\s+(?:Jr|Sr|III?|IV)\.?)?$"                      # Optional suffix
+    r"|^[A-Z][A-Z]+\s+[A-Z][A-Z]+$"                      # ALL CAPS: "LARS JOHANSSON"
+    r"|^[A-Z][A-Z]\s+[A-Z][a-z]"                         # "DJ Seo" style
 )
 
 # Obvious junk patterns for investor names
@@ -1405,7 +1421,10 @@ _JUNK_INVESTOR_RE = re.compile(
     r"|^\d+\s+investor"
     r"|^n/a\b"
     r"|^N/A\b"
-    r"|^-\s",
+    r"|^-\s"
+    r"|^.*\b(CEO|CTO|CFO|COO|VP|Director|Manager)\s*$"
+    r"|^(Multibillion|Multi-billion|Undisclosed|Various|Several)"
+    r"|^U\.?S\.?\s+Government",
     re.I,
 )
 
@@ -1415,6 +1434,9 @@ def _investor_looks_like_firm(name: str) -> bool:
     if not name:
         return False
     name_lower = name.lower()
+    # Known firm names that look like person names
+    if name_lower in _KNOWN_FIRM_NAMES:
+        return True
     # Contains firm keywords
     if any(kw in name_lower for kw in _INVESTOR_FIRM_KEYWORDS):
         return True
@@ -1424,8 +1446,14 @@ def _investor_looks_like_firm(name: str) -> bool:
     # Starts with digits — not a person name (e.g. "01A", "37 Angels")
     if name and name[0].isdigit():
         return True
+    # Starts with lowercase — likely a brand (a16z, etc.)
+    if name and name[0].islower():
+        return True
     # Contains parentheses — likely an org abbreviation
     if "(" in name:
+        return True
+    # ALL CAPS abbreviations (3+ chars) — likely org (ICONIQ, ARENA, DST, DFJ, DXC)
+    if re.match(r'^[A-Z]{2,}(\s|$)', name) and not _PERSON_NAME_RE.match(name):
         return True
     return False
 
@@ -1462,13 +1490,15 @@ def clean_investors(conn) -> Dict:
     firm_investor_ids = []
     for inv in all_investors:
         name = inv["name"]
-        # Skip if it looks like a real person name
-        if _PERSON_NAME_RE.match(name):
-            continue
-        # Check if it matches a known firm
+
+        # Check if it's a firm: keywords, known names, or DB match
+        is_firm = _investor_looks_like_firm(name)
+
+        # Check if it matches a known firm in the DB
         firm_row = conn.execute(
             "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)", (name,)
         ).fetchone()
+
         if firm_row:
             # This investor record IS a firm — relink deals to the firm, then delete
             firm_id = firm_row["id"]
@@ -1489,8 +1519,14 @@ def clean_investors(conn) -> Dict:
                     )
                     stats["relinked"] += 1
             firm_investor_ids.append(inv["id"])
-        elif _investor_looks_like_firm(name):
-            # Looks like a firm but doesn't match one — just remove
+        elif is_firm:
+            # Matches firm keywords, known firm names, or structural patterns
+            firm_investor_ids.append(inv["id"])
+        elif _PERSON_NAME_RE.match(name):
+            # Looks like a real person name — keep it
+            continue
+        else:
+            # Doesn't match person or firm patterns — remove to be safe
             firm_investor_ids.append(inv["id"])
 
     if firm_investor_ids:
