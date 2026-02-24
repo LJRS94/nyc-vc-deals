@@ -403,9 +403,11 @@ def seed_firms():
 
 def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
     """
-    Generic portfolio page scraper.
-    Looks for company names, descriptions, and links on a VC's portfolio page.
-    Returns list of dicts with extracted portfolio company info.
+    Portfolio page scraper using site-specific extraction patterns
+    with a generic fallback.
+
+    Each VC site has unique HTML structure, so we detect the pattern
+    and apply the right extraction logic.
     """
     results = []
     try:
@@ -413,88 +415,167 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Strategy 1: Look for common portfolio card patterns
-        selectors = [
-            "div.portfolio-company", "div.company-card", "article.portfolio",
-            "div.portfolio-item", "li.portfolio", "div[class*='portfolio']",
-            "div[class*='company']", "a[class*='portfolio']",
-        ]
+        # ── Try site-specific extractors in order ──────────────
 
-        cards = []
-        for sel in selectors:
-            cards = soup.select(sel)
-            if cards:
-                break
-
-        if not cards:
-            # Fallback: look for repeated link patterns in main content
-            main = soup.find("main") or soup.find("div", {"role": "main"}) or soup
-            links = main.find_all("a", href=True)
+        # Pattern 1: m__list-row (USV-style table layout)
+        rows = soup.select("div.m__list-row:not(.m__list-row--mobile)")
+        if rows:
             seen = set()
-            for link in links:
-                text = link.get_text(strip=True)
-                href = link.get("href", "")
-                if (
-                    text and len(text) > 2 and len(text) < 100
-                    and text not in seen
-                    and not href.startswith("#")
-                    and "portfolio" not in text.lower()
-                    and "home" not in text.lower()
-                    and "about" not in text.lower()
-                    and "team" not in text.lower()
-                    and "contact" not in text.lower()
-                ):
-                    seen.add(text)
-                    results.append({
-                        "company_name": text,
-                        "company_website": urljoin(portfolio_url, href) if href.startswith("/") else href,
-                        "source_url": portfolio_url,
-                    })
-        else:
+            for row in rows:
+                links = row.find_all("a", href=True)
+                for link in links:
+                    href = link.get("href", "")
+                    text = link.get_text(strip=True)
+                    if (
+                        href.startswith("http")
+                        and text
+                        and "usv.com" not in href
+                        and "Read" not in text
+                        and text not in seen
+                    ):
+                        seen.add(text)
+                        results.append({
+                            "company_name": text,
+                            "company_website": href,
+                            "source_url": portfolio_url,
+                        })
+            if results:
+                logger.info(f"[{firm_name}] Found {len(results)} companies (list-row pattern)")
+                return results
+
+        # Pattern 2: portfolio-card (Greycroft-style cards)
+        cards = soup.select("div.portfolio-card")
+        if cards:
             for card in cards:
-                name_el = (
-                    card.find("h2") or card.find("h3") or
-                    card.find("h4") or card.find("a") or card
+                container = card.select_one("div.container")
+                if not container:
+                    continue
+                # Company name is in first text node of container
+                name_el = container.find(["h2", "h3", "h4", "p", "span", "div"])
+                name = name_el.get_text(strip=True) if name_el else ""
+                # Skip filter UI and generic labels
+                if not name or name.lower() in ("yearfilter", "filter", "all", "active"):
+                    continue
+                # Extract website from "Visit Website" link
+                link_el = card.select_one('a[href^="http"]')
+                href = link_el.get("href", "") if link_el else ""
+                # Skip internal links
+                if href and portfolio_url.split("/")[2] in href:
+                    href = ""
+                desc_el = card.select_one("div.portfolio-card__accordion")
+                desc = desc_el.get_text(strip=True)[:200] if desc_el else None
+                results.append({
+                    "company_name": name,
+                    "company_website": href or None,
+                    "description": desc,
+                    "source_url": portfolio_url,
+                })
+            if results:
+                logger.info(f"[{firm_name}] Found {len(results)} companies (portfolio-card pattern)")
+                return results
+
+        # Pattern 3: portfolio-wrap / portfolio-item (Lerer Hippeau / Webflow-style)
+        wraps = soup.select("div.portfolio-wrap")
+        if wraps:
+            for wrap in wraps:
+                title_el = (
+                    wrap.select_one("div.portfolio-title div.h3")
+                    or wrap.select_one("div.h3")
+                    or wrap.select_one("h3")
                 )
-                name = name_el.get_text(strip=True) if name_el else None
+                if not title_el:
+                    continue
+                name = title_el.get_text(strip=True)
                 if not name:
                     continue
-                desc_el = card.find("p")
-                desc = desc_el.get_text(strip=True) if desc_el else None
+                desc_el = wrap.select_one("div.short-desc") or wrap.select_one("div.text-14px")
+                desc = desc_el.get_text(strip=True)[:200] if desc_el else None
+                # Clean "Read more." from descriptions
+                if desc and desc.endswith("Read more."):
+                    desc = desc[:-10].strip()
+                results.append({
+                    "company_name": name,
+                    "company_website": None,
+                    "description": desc,
+                    "source_url": portfolio_url,
+                })
+            if results:
+                logger.info(f"[{firm_name}] Found {len(results)} companies (portfolio-wrap pattern)")
+                return results
+
+        # Pattern 4: Repeating card containers with headings
+        _card_selectors = [
+            "div.portfolio-company", "div.company-card", "article.portfolio",
+            "div.portfolio-item", "li.portfolio-item",
+        ]
+        cards = []
+        for sel in _card_selectors:
+            cards = soup.select(sel)
+            if len(cards) >= 3:
+                break
+
+        if cards:
+            for card in cards:
+                name_el = card.find(["h2", "h3", "h4"])
+                if not name_el:
+                    name_el = card.find("a")
+                name = name_el.get_text(strip=True) if name_el else None
+                if not name or len(name) < 2 or len(name) > 80:
+                    continue
+                # Skip nav-like text
+                if name.lower() in ("portfolio", "home", "about", "team", "contact", "read more", "read more."):
+                    continue
                 link_el = card.find("a", href=True)
                 href = link_el["href"] if link_el else None
                 if href and href.startswith("/"):
                     href = urljoin(portfolio_url, href)
-
-                # Extract lead partner if mentioned
-                lead_partner = None
-                partner_patterns = [
-                    card.find(string=re.compile(r"(?:Partner|Lead|Board):\s*(.+)", re.I)),
-                    card.find(["span", "div"], class_=re.compile(r"partner|lead|board", re.I)),
-                ]
-                for pp in partner_patterns:
-                    if pp:
-                        ptext = pp.get_text(strip=True) if hasattr(pp, 'get_text') else str(pp)
-                        m = re.search(r"(?:Partner|Lead|Board):\s*(.+)", ptext, re.I)
-                        lead_partner = m.group(1).strip() if m else ptext.strip()
-                        break
-
-                # Extract sector if mentioned
-                sector = None
-                sector_el = card.find(["span", "div"], class_=re.compile(r"sector|category|industry|tag", re.I))
-                if sector_el:
-                    sector = sector_el.get_text(strip=True)
-
+                desc_el = card.find("p")
+                desc = desc_el.get_text(strip=True)[:200] if desc_el else None
                 results.append({
                     "company_name": name,
                     "company_website": href,
                     "description": desc,
-                    "lead_partner": lead_partner,
-                    "sector": sector,
+                    "source_url": portfolio_url,
+                })
+            if results:
+                logger.info(f"[{firm_name}] Found {len(results)} companies (card pattern)")
+                return results
+
+        # Pattern 5: External links with company-like names (generic fallback)
+        # Collect all external links that look like company websites
+        _NAV_WORDS = {
+            "portfolio", "home", "about", "team", "contact", "blog", "news",
+            "press", "careers", "jobs", "insights", "updates", "people",
+            "read more", "read more.", "read the post", "read", "visit website",
+            "learn more", "view all", "load more", "show more", "back to top",
+            "privacy", "terms", "cookie", "subscribe", "sign up", "log in",
+            "filter", "sort", "search", "menu", "close", "open",
+        }
+        domain = portfolio_url.split("/")[2]
+        seen = set()
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "")
+            text = link.get_text(strip=True)
+            if (
+                text
+                and href.startswith("http")
+                and domain not in href
+                and len(text) > 2 and len(text) < 60
+                and text.lower() not in _NAV_WORDS
+                and not text.startswith("#")
+                and not re.search(r"^\d+$", text)
+                and text not in seen
+                # Name should look like a company (starts with uppercase or has multiple words)
+                and (text[0].isupper() or " " in text)
+            ):
+                seen.add(text)
+                results.append({
+                    "company_name": text,
+                    "company_website": href,
                     "source_url": portfolio_url,
                 })
 
-        logger.info(f"[{firm_name}] Found {len(results)} portfolio companies")
+        logger.info(f"[{firm_name}] Found {len(results)} companies (external-link fallback)")
     except Exception as e:
         logger.warning(f"[{firm_name}] Portfolio scrape failed: {e}")
 

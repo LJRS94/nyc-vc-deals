@@ -29,7 +29,7 @@ from database import (
 )
 from fetcher import fetch, SEC_HEADERS
 from scrapers.utils import (
-    should_skip_deal, is_nyc_related, classify_sector,
+    should_skip_deal, is_nyc_related, detect_city, classify_sector,
     normalize_stage, parse_amount, link_investors_to_deal,
 )
 from scrapers.news_scraper import extract_company_name, extract_investors
@@ -57,14 +57,26 @@ HEADERS = {
 from config import DELAWARE_ECORP_BASE, DELAWARE_ENTITY_SEARCH
 
 
+_ICIS_BLOCKED = False  # module-level flag to skip after first CAPTCHA hit
+
+
 def search_delaware_entities(company_name: str) -> List[Dict]:
     """
     Search Delaware Division of Corporations ICIS system for an entity.
     Returns matching entities with file number, status, and incorporation date.
+
+    NOTE: As of 2025, the ICIS site is behind AWS WAF CAPTCHA and cannot be
+    scraped without a headless browser.  This function detects the CAPTCHA
+    and returns an empty list (with a one-time warning) rather than burning
+    time on 405 responses.
     """
+    global _ICIS_BLOCKED
+
+    if _ICIS_BLOCKED:
+        return []
+
     results = []
     try:
-        # Step 1: Get the search page to capture viewstate tokens
         session = requests.Session()
         page = session.get(DELAWARE_ENTITY_SEARCH, headers=HEADERS, timeout=15)
 
@@ -72,9 +84,17 @@ def search_delaware_entities(company_name: str) -> List[Dict]:
             logger.warning(f"DE ICIS search page returned {page.status_code}")
             return results
 
+        # Detect AWS WAF CAPTCHA
+        if "x-amzn-waf-action" in page.headers or "awswaf" in page.text.lower() or "captcha" in page.text.lower():
+            logger.warning(
+                "DE ICIS is behind AWS WAF CAPTCHA — skipping direct entity search. "
+                "Relying on SEC EDGAR cross-reference instead."
+            )
+            _ICIS_BLOCKED = True
+            return results
+
         soup = BeautifulSoup(page.text, "html.parser")
 
-        # Extract ASP.NET form tokens
         viewstate = soup.find("input", {"name": "__VIEWSTATE"})
         viewstate_gen = soup.find("input", {"name": "__VIEWSTATEGENERATOR"})
         event_validation = soup.find("input", {"name": "__EVENTVALIDATION"})
@@ -83,8 +103,9 @@ def search_delaware_entities(company_name: str) -> List[Dict]:
             logger.warning("Could not find ASP.NET viewstate on DE search page")
             return results
 
-        # Step 2: POST search request
         form_data = {
+            "__EVENTTARGET": "",
+            "__EVENTARGUMENT": "",
             "__VIEWSTATE": viewstate.get("value", ""),
             "__VIEWSTATEGENERATOR": viewstate_gen.get("value", "") if viewstate_gen else "",
             "__EVENTVALIDATION": event_validation.get("value", "") if event_validation else "",
@@ -96,38 +117,41 @@ def search_delaware_entities(company_name: str) -> List[Dict]:
         search_resp = session.post(
             DELAWARE_ENTITY_SEARCH,
             data=form_data,
-            headers={**HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                **HEADERS,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://icis.corp.delaware.gov",
+                "Referer": DELAWARE_ENTITY_SEARCH,
+            },
             timeout=15,
         )
+
+        # Detect CAPTCHA on the POST response
+        if search_resp.status_code == 405 or "awswaf" in search_resp.text.lower():
+            logger.warning("DE ICIS POST triggered AWS WAF CAPTCHA — disabling direct search")
+            _ICIS_BLOCKED = True
+            return results
 
         if search_resp.status_code != 200:
             return results
 
         result_soup = BeautifulSoup(search_resp.text, "html.parser")
 
-        # Step 3: Parse results table
         table = result_soup.find("table", {"id": lambda x: x and "SearchResults" in str(x)})
         if not table:
-            # Try alternate table patterns
             table = result_soup.find("table", class_=re.compile(r"grid|results|data", re.I))
 
         if table:
-            rows = table.find_all("tr")[1:]  # skip header
-            for row in rows[:10]:  # limit results
+            rows = table.find_all("tr")[1:]
+            for row in rows[:10]:
                 cells = row.find_all("td")
                 if len(cells) >= 3:
-                    entity_name = cells[0].get_text(strip=True)
-                    file_number = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-                    inc_date = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                    status = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                    entity_type = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-
                     results.append({
-                        "entity_name": entity_name,
-                        "file_number": file_number,
-                        "incorporation_date": inc_date,
-                        "status": status,
-                        "entity_type": entity_type,
+                        "entity_name": cells[0].get_text(strip=True),
+                        "file_number": cells[1].get_text(strip=True) if len(cells) > 1 else "",
+                        "incorporation_date": cells[2].get_text(strip=True) if len(cells) > 2 else "",
+                        "status": cells[3].get_text(strip=True) if len(cells) > 3 else "",
+                        "entity_type": cells[4].get_text(strip=True) if len(cells) > 4 else "",
                         "state": "DE",
                         "source": "delaware_icis",
                     })
@@ -190,73 +214,92 @@ def get_delaware_entity_details(file_number: str) -> Optional[Dict]:
 def search_sec_de_incorporated(days_back: int = 14) -> List[Dict]:
     """
     Search SEC EDGAR for Form D filings where the issuer is
-    incorporated in Delaware but has a principal place of business in New York.
-    This catches the classic VC startup pattern: DE corp, NYC HQ.
+    incorporated in Delaware but has a principal place of business
+    in one of the enabled cities.
+
+    Uses EFTS search-index with inc_states=DE and biz_locations matching
+    each city.  The EFTS response schema uses:
+      display_names[], ciks[], adsh, file_date, biz_locations[], inc_states[]
     """
+    from config import get_enabled_cities
+
     results = []
     start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
+    existing_names = set()
 
-    try:
-        # EDGAR full-text search for Form D filings mentioning Delaware + New York
-        search_url = (
-            "https://efts.sec.gov/LATEST/search-index"
-            f"?q=%22Delaware%22+%22New+York%22"
-            f"&forms=D,D/A"
-            f"&dateRange=custom&startdt={start_date}&enddt={end_date}"
-            f"&from=0&size=50"
-        )
+    # City-specific location queries that match EFTS biz_locations values
+    _CITY_LOC_QUERIES = {
+        "New York": ['"New York, NY"', '"Brooklyn, NY"'],
+        "Boston": ['"Boston, MA"', '"Cambridge, MA"'],
+        "Washington DC": ['"Washington, DC"'],
+        "San Francisco": ['"San Francisco, CA"', '"Palo Alto, CA"'],
+    }
 
-        resp = fetch(search_url, headers=SEC_HEADERS, timeout=30)
+    for city_cfg in get_enabled_cities():
+        city_name = city_cfg["display_name"]
+        loc_queries = _CITY_LOC_QUERIES.get(city_name, [])
 
-        if resp.status_code == 200:
-            data = resp.json()
-            hits = data.get("hits", {}).get("hits", [])
-            for hit in hits:
-                source = hit.get("_source", {})
-                results.append({
-                    "company_name": source.get("entity_name", "Unknown"),
-                    "filing_date": source.get("file_date"),
-                    "accession_number": source.get("accession_no"),
-                    "cik": source.get("entity_id"),
-                    "source": "sec_edgar_de_ny",
-                })
-        else:
-            logger.warning(f"EDGAR DE+NY search returned status {resp.status_code}")
+        for loc_q in loc_queries:
+            # Search for DE-incorporated filings with business in this city
+            # The full-text search matches both inc_states and biz_locations
+            query = f'"Delaware" {loc_q}'
+            try:
+                url = "https://efts.sec.gov/LATEST/search-index"
+                params = {
+                    "q": query,
+                    "forms": "D,D/A",
+                    "dateRange": "custom",
+                    "startdt": start_date,
+                    "enddt": end_date,
+                    "from": 0,
+                    "size": 100,
+                }
+                resp = fetch(url, headers=SEC_HEADERS, params=params, timeout=30)
+                if resp.status_code != 200:
+                    continue
 
-    except Exception as e:
-        logger.warning(f"EDGAR DE+NY search failed: {e}")
+                ct = resp.headers.get("content-type", "")
+                if "json" not in ct:
+                    continue
 
-    # Also search specifically for Form D with "incorporated in Delaware"
-    try:
-        search_url2 = (
-            "https://efts.sec.gov/LATEST/search-index"
-            f"?q=%22incorporated+in+Delaware%22+%22New+York%22"
-            f"&forms=D,D/A"
-            f"&dateRange=custom&startdt={start_date}&enddt={end_date}"
-            f"&from=0&size=50"
-        )
-        resp2 = fetch(search_url2, headers=SEC_HEADERS, timeout=30)
+                data = resp.json()
+                for hit in data.get("hits", {}).get("hits", []):
+                    src = hit.get("_source", {})
+                    display_names = src.get("display_names", [])
+                    name = display_names[0] if display_names else "Unknown"
+                    if name in existing_names or name == "Unknown":
+                        continue
+                    existing_names.add(name)
 
-        if resp2.status_code == 200:
-            data2 = resp2.json()
-            existing_names = {r["company_name"] for r in results}
-            for hit in data2.get("hits", {}).get("hits", []):
-                source = hit.get("_source", {})
-                name = source.get("entity_name", "Unknown")
-                if name not in existing_names:
+                    ciks = src.get("ciks", [])
+                    cik = ciks[0].lstrip("0") if ciks else None
+                    inc_states = src.get("inc_states", [])
+
+                    # Only keep if actually DE-incorporated
+                    if inc_states and "DE" not in inc_states:
+                        continue
+
                     results.append({
                         "company_name": name,
-                        "filing_date": source.get("file_date"),
-                        "accession_number": source.get("accession_no"),
-                        "cik": source.get("entity_id"),
-                        "source": "sec_edgar_de_ny",
+                        "filing_date": src.get("file_date"),
+                        "accession_number": src.get("adsh"),
+                        "cik": cik,
+                        "biz_locations": src.get("biz_locations", []),
+                        "inc_states": inc_states,
+                        "source": f"sec_edgar_de_{city_cfg['state_code'].lower()}",
+                        "expected_city": city_name,
                     })
 
-    except Exception as e:
-        logger.warning(f"EDGAR DE incorporated search failed: {e}")
+                total_count = data.get("hits", {}).get("total", {})
+                if isinstance(total_count, dict):
+                    total_count = total_count.get("value", 0)
+                logger.info(f"EFTS DE+{loc_q}: {len(data.get('hits',{}).get('hits',[]))} hits (total {total_count})")
 
-    logger.info(f"Found {len(results)} DE-incorporated + NY-based Form D filings")
+            except Exception as e:
+                logger.warning(f"EDGAR DE+{loc_q} search failed: {e}")
+
+    logger.info(f"Found {len(results)} DE-incorporated Form D filings across all cities")
     return results
 
 
@@ -333,22 +376,25 @@ def parse_form_d_for_de_info(accession_number: str) -> Optional[Dict]:
 
             tag_lower = tag.lower()
 
-            if "stateofincorporation" in tag_lower or "stateofinc" in tag_lower:
+            if "jurisdictionofinc" in tag_lower or "stateofincorporation" in tag_lower or "stateofinc" in tag_lower:
                 result["state_of_incorporation"] = text
-            elif "issuerstate" in tag_lower and "country" in tag_lower:
-                result["state_of_business"] = text
-            elif "stateorcountry" in tag_lower and not result["state_of_business"]:
+            elif tag_lower == "stateorcountry" and not result["state_of_business"]:
+                # First stateOrCountry is the issuer's business address state
                 result["state_of_business"] = text
             elif "totalofferingamount" in tag_lower:
-                try:
-                    result["offering_amount"] = float(text)
-                except ValueError:
-                    pass
+                cleaned = text.replace(",", "").strip()
+                if cleaned.lower() != "indefinite":
+                    try:
+                        result["offering_amount"] = float(cleaned)
+                    except ValueError:
+                        pass
             elif "totalamountsold" in tag_lower:
-                try:
-                    result["amount_sold"] = float(text)
-                except ValueError:
-                    pass
+                cleaned = text.replace(",", "").strip()
+                if cleaned.lower() != "indefinite":
+                    try:
+                        result["amount_sold"] = float(cleaned)
+                    except ValueError:
+                        pass
             elif "industrygrouptype" in tag_lower:
                 result["industry"] = text
             elif "entitytype" in tag_lower:
@@ -392,14 +438,20 @@ def parse_form_d_for_de_info(accession_number: str) -> Optional[Dict]:
 def search_opencorporates_de(company_name: str) -> Optional[Dict]:
     """
     Search OpenCorporates for Delaware-incorporated entities.
-    Free tier: 50 requests/month, no API key needed for basic search.
+    Requires API key (set OPENCORPORATES_API_KEY env var).
+    Returns None if no key or no results.
     """
+    from config import OPENCORPORATES_API_KEY
+    if not OPENCORPORATES_API_KEY:
+        return None
+
     try:
         url = "https://api.opencorporates.com/v0.4/companies/search"
         params = {
             "q": company_name,
             "jurisdiction_code": "us_de",
             "order": "score",
+            "api_token": OPENCORPORATES_API_KEY,
         }
         resp = fetch(url, params=params, timeout=15)
 
@@ -417,6 +469,8 @@ def search_opencorporates_de(company_name: str) -> Optional[Dict]:
                     "source": "opencorporates",
                     "opencorporates_url": company.get("opencorporates_url"),
                 }
+        elif resp.status_code == 401:
+            logger.debug("OpenCorporates API key invalid or missing")
 
     except Exception as e:
         logger.debug(f"OpenCorporates search failed for '{company_name}': {e}")
@@ -554,7 +608,7 @@ def verify_de_incorporation(company_name: str) -> Dict:
 
 # ── Main Pipeline ─────────────────────────────────────────────
 
-def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[int]:
+def process_de_filing(conn, company_name: str, filing_data: Dict, city: str = None) -> Optional[int]:
     """
     Process a single Delaware-related filing/entity and insert into database.
     Routes through validate_deal() quality gate.
@@ -567,6 +621,8 @@ def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[in
     source_url = filing_data.get("opencorporates_url") or \
                  "https://icis.corp.delaware.gov/ecorp/entitysearch/namesearch.aspx"
 
+    deal_city = city or filing_data.get("expected_city")
+
     accepted, reason, cleaned = validate_deal(
         conn, company_name,
         amount=amount,
@@ -575,6 +631,7 @@ def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[in
         raw_text=json.dumps(filing_data)[:2000],
         source_url=source_url,
         category_id=cat_id,
+        city=deal_city,
     )
     if not accepted:
         return None
@@ -599,7 +656,7 @@ def process_de_filing(conn, company_name: str, filing_data: Dict) -> Optional[in
     return deal_id
 
 
-def run_delaware_scraper(days_back: int = 14):
+def run_delaware_scraper(days_back: int = 90):
     """
     Main entry point for Delaware filings scraper.
 
@@ -634,17 +691,28 @@ def run_delaware_scraper(days_back: int = 14):
             if form_d_details:
                 state_inc = form_d_details.get("state_of_incorporation", "")
                 state_biz = form_d_details.get("state_of_business", "")
-                if state_inc == "DE" and state_biz == "NY":
-                    filing_data = {
-                        **filing,
-                        "offering_amount": form_d_details.get("offering_amount"),
-                        "amount_sold": form_d_details.get("amount_sold"),
-                        "industry": form_d_details.get("industry"),
-                        "investors": form_d_details.get("investors", []),
-                        "state_of_incorporation": "DE",
-                        "state_of_business": "NY",
-                    }
-                    enriched_filings.append((company_name, filing_data))
+                # Check if the business state matches any enabled city
+                expected_city = filing.get("expected_city")
+                is_de = (
+                    state_inc == "DE"
+                    or state_inc.upper() == "DELAWARE"
+                    or "delaware" in state_inc.lower()
+                )
+                if is_de and expected_city:
+                    from config import get_city_config
+                    city_cfg = get_city_config(expected_city)
+                    if city_cfg and state_biz in (city_cfg.get("state_code"), city_cfg.get("state_name")):
+                        filing_data = {
+                            **filing,
+                            "offering_amount": form_d_details.get("offering_amount"),
+                            "amount_sold": form_d_details.get("amount_sold"),
+                            "industry": form_d_details.get("industry"),
+                            "investors": form_d_details.get("investors", []),
+                            "state_of_incorporation": "DE",
+                            "state_of_business": state_biz,
+                            "expected_city": expected_city,
+                        }
+                        enriched_filings.append((company_name, filing_data))
 
         # ── Source 2: Cross-reference existing deals for DE status ──
         logger.info("── [DE-2] Cross-referencing existing deals with DE incorporation ──")
@@ -714,8 +782,11 @@ def run_delaware_scraper(days_back: int = 14):
                 url = article.get("url", "")
                 full_text = f"{title} {article.get('description', '')}"
 
-                if not is_nyc_related(full_text):
+                news_city = detect_city(full_text)
+                if not news_city and not is_nyc_related(full_text):
                     continue
+                if not news_city:
+                    news_city = "New York"
 
                 company_name = extract_company_name(title)
                 if not company_name:
@@ -733,6 +804,7 @@ def run_delaware_scraper(days_back: int = 14):
                     source_url=url,
                     category_id=cat_id,
                     raw_text=full_text[:2000],
+                    city=news_city,
                 )
                 if not accepted:
                     continue

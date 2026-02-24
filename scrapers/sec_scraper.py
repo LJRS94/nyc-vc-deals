@@ -28,37 +28,52 @@ from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
 
-# ── NYC zip codes and keywords for address filtering ──────────
-NYC_ZIPS = set()
-for prefix in ["100", "101", "102", "103", "104", "110", "111", "112", "113", "114", "116"]:
-    for i in range(100):
-        NYC_ZIPS.add(f"{prefix}{i:02d}"[:5])
+# ── Multi-city zip codes and keywords for address filtering ──────────
+from config import CITY_REGISTRY, ENABLED_CITIES
 
-NYC_KEYWORDS = [
-    "new york", "manhattan", "brooklyn", "queens", "bronx",
-    "staten island", "nyc", "ny 100", "ny 101", "ny 110", "ny 111",
-]
+# Build zip sets and keyword lists per city from the registry
+_CITY_ZIPS = {}
+_CITY_KEYWORDS = {}
+for _cn, _cfg in CITY_REGISTRY.items():
+    _zips = set()
+    for prefix in _cfg.get("zip_prefixes", []):
+        for i in range(100):
+            _zips.add(f"{prefix}{i:02d}"[:5])
+    _CITY_ZIPS[_cn] = _zips
+    _CITY_KEYWORDS[_cn] = [ind.lower() for ind in _cfg.get("indicators", [])]
+
+# Legacy aliases for backward compat
+NYC_ZIPS = _CITY_ZIPS.get("New York", set())
+NYC_KEYWORDS = _CITY_KEYWORDS.get("New York", [])
+
+
+def _detect_city_from_address(text: str) -> str:
+    """Detect city from an address/text. Returns city name or None."""
+    t = text.lower()
+    for city_name in ENABLED_CITIES:
+        keywords = _CITY_KEYWORDS.get(city_name, [])
+        if any(kw in t for kw in keywords):
+            return city_name
+    return None
 
 
 def _is_nyc(text: str) -> bool:
-    """Check if an address/text refers to NYC."""
-    t = text.lower()
-    return any(kw in t for kw in NYC_KEYWORDS)
+    """Check if an address/text refers to NYC (backward compat)."""
+    return _detect_city_from_address(text) == "New York"
 
 
 # ── Junk-filing filters ─────────────────────────────────────────
 
-# Entity suffixes that indicate non-startup structures (real estate LLCs, funds, etc.)
+# Entity suffixes that almost always indicate non-startup structures.
+# NOTE: LLC and LP are intentionally NOT here — many legitimate startups
+# file as LLCs/LPs. Fund-like LLCs are caught by _ENTITY_KEYWORD_BLOCKLIST
+# (which checks for "Fund", "Holdings", "Partners", etc.).
 _ENTITY_BLOCKLIST = re.compile(
     r"""(?ix)              # case-insensitive, verbose
     (?:^|\s)               # word boundary
     (?:
-        L\.?L\.?C\.?       # LLC, L.L.C.
-      | L\.?P\.?           # LP, L.P.
-      | LTD\.?             # LTD
-      | REIT               # Real Estate Investment Trust
+        REIT               # Real Estate Investment Trust
       | DST                # Delaware Statutory Trust
-      | Trust              # trust
       | SPV                # Special Purpose Vehicle
       | PLC(?:/ADR)?       # PLC, PLC/ADR
       | /ADR               # American Depositary Receipts (public companies)
@@ -74,26 +89,38 @@ _ENTITY_BLOCKLIST = re.compile(
 _ENTITY_KEYWORD_BLOCKLIST = re.compile(
     r"""(?ix)
     (?:
-        \bFund(?:ing)?\b
+        \bFund\b                   # "Fund" alone (catches "ABC Fund LP", "Fund III")
+      | \bFeeder\b                 # feeder fund
       | \bHoldings?\b
-      | \bPartners(?:hip)?\b
+      | \bPartners(?:hip)?\b       # "Partners" or "Partnership"
       | \bAssociates?\b
       | \bInvestors?\b
       | \bRealty\b
       | \bEstate\b
-      | \bMember\b
       | \bVentures\s+Fund\b
       | \bCapital\s+Fund\b
       | \bCapital\s+Partners\b
       | \bCapital\s+Management\b
       | \bAcquisition\s+Corp\b
       | \bMaster\s+Fund\b
-      | \bInvestment\s+Fund\b
-      | \bPooled\s+Investment\b
+      | \bInvestment\b
+      | \bPooled\b
       | \bInsurance\b
       | \bAnnuity\b
       | \bDiocese\b
-      | \bGrowth\s+Strategy\b
+      | \bTrust\b
+      | \bSeries\s+[A-Z0-9IVX]+\b  # "Series III", "Series A-1" (fund series)
+      | \bOffshore\b
+      | \bOnshore\b
+      | \bCo-Invest\b
+      | \bSidecar\b
+      | \bLP\s*-\s*Series\b         # "LP - Series III"
+      | \bIDF\b                     # Interval/Drawdown Fund
+      | \bAsset\s+Backed\b
+      | \bCredit\s+Co\b
+      | \bConglomerate\b
+      | \bBDC\b                     # Business Development Company
+      | \bCorp(?:oration)?\b(?=.*\b(?:Acquisition|Blank\s+Check|SPAC)\b)
     )
     """,
 )
@@ -167,15 +194,17 @@ def _should_keep_sec_filing(company_name: str, details: Optional[Dict], conn) ->
     # 4. Minimum enrichment — reject if we got zero useful data from the Form D XML
     if details:
         has_amount = bool(details.get("amount_sold") or details.get("total_offering"))
+        has_indefinite = bool(details.get("amount_sold_indefinite") or details.get("total_offering_indefinite"))
         has_industry = bool((details.get("industry") or "").strip())
         has_investors = bool(details.get("investors_count"))
-        if not has_amount and not has_industry and not has_investors:
+        has_city = bool((details.get("city") or "").strip())
+        if not has_amount and not has_indefinite and not has_industry and not has_investors and not has_city:
             logger.debug(f"Skipping no-data filing: {company_name}")
             return False
     else:
-        # No XML details at all — too thin to be useful
-        logger.debug(f"Skipping unenriched filing: {company_name}")
-        return False
+        # No XML details at all — still allow if we have a valid name and filing info
+        # (EFTS gives us company name, filing date, CIK even without XML)
+        return True
 
     # 5. VC firm check — reject if the "company" is actually a known VC firm
     skip_reason = should_skip_deal(conn, company_name)
@@ -232,16 +261,20 @@ def search_efts(query: str, days_back: int = 180, max_results: int = 200) -> Lis
 
             for hit in hits:
                 src = hit.get("_source", {})
-                name = (
-                    src.get("entity_name") or
-                    (src.get("display_names", [None])[0] if src.get("display_names") else None) or
-                    "Unknown"
-                )
+                # EFTS fields: display_names (array), ciks (array), adsh, file_date
+                display_names = src.get("display_names", [])
+                name = display_names[0] if display_names else "Unknown"
+                ciks = src.get("ciks", [])
+                cik = ciks[0].lstrip("0") if ciks else None
+                biz_locs = src.get("biz_locations", [])
+                biz_states = src.get("biz_states", [])
                 results.append({
                     "company_name": name,
                     "filing_date": src.get("file_date"),
-                    "accession_number": src.get("accession_no"),
-                    "cik": src.get("entity_id"),
+                    "accession_number": src.get("adsh"),
+                    "cik": cik,
+                    "biz_locations": biz_locs,
+                    "biz_states": biz_states,
                     "source_method": "efts",
                 })
 
@@ -260,87 +293,84 @@ def search_efts(query: str, days_back: int = 180, max_results: int = 200) -> Lis
 
 
 # ═══════════════════════════════════════════════════════════════
-#  METHOD B: EDGAR Company Search Atom Feed
+#  METHOD B: EDGAR EFTS Location-Based Search
 # ═══════════════════════════════════════════════════════════════
 
-def search_atom_feed(state: str = "NY", days_back: int = 180, max_results: int = 200) -> List[Dict]:
+def search_efts_by_location(location_query: str, days_back: int = 180,
+                            max_results: int = 200) -> List[Dict]:
     """
-    Use EDGAR company search Atom feed to find Form D filings by state.
-    Paginates through results (40 at a time).
+    Search EDGAR EFTS for Form D filings matching a location string.
+    This replaces the old Atom feed approach which returned a company directory
+    (all entities in a state, alphabetically) rather than recent filings.
+
+    Uses the same search-index endpoint as search_efts but with location-
+    specific queries like '"Brooklyn, NY"' or '"Boston, MA"'.
     """
     results = []
-    page_size = 40
+    start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    end_date = datetime.now().strftime("%Y-%m-%d")
+
     offset = 0
+    page_size = 100
 
     while offset < max_results:
-        url = "https://www.sec.gov/cgi-bin/browse-edgar"
+        url = "https://efts.sec.gov/LATEST/search-index"
         params = {
-            "action": "getcompany",
-            "State": state,
-            "SIC": "",
-            "type": "D",
-            "dateb": "",
-            "owner": "include",
-            "count": page_size,
-            "start": offset,
-            "output": "atom",
+            "q": location_query,
+            "forms": "D,D/A",
+            "dateRange": "custom",
+            "startdt": start_date,
+            "enddt": end_date,
+            "from": offset,
+            "size": min(page_size, max_results - offset),
         }
 
         try:
             resp = fetch(url, headers=SEC_HEADERS, params=params, timeout=30)
             if resp.status_code != 200:
-                logger.warning(f"Atom feed HTTP {resp.status_code} for state={state}")
+                logger.warning(f"EFTS location search HTTP {resp.status_code}")
                 break
 
-            root = ET.fromstring(resp.text)
-            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            ct = resp.headers.get("content-type", "")
+            if "json" not in ct:
+                logger.warning(f"EFTS location search non-JSON: {ct}")
+                break
 
-            entries = root.findall(".//atom:entry", ns)
-            if not entries:
-                entries = root.findall(".//entry")
+            data = resp.json()
+            hits = data.get("hits", {}).get("hits", [])
+            total = data.get("hits", {}).get("total", {})
+            total_count = total.get("value", 0) if isinstance(total, dict) else total
 
-            for entry in entries:
-                title = entry.findtext("atom:title", "", ns) or entry.findtext("title", "")
-                updated = entry.findtext("atom:updated", "", ns) or entry.findtext("updated", "")
-                link_el = entry.find("atom:link", ns) or entry.find("link")
-                link = link_el.get("href", "") if link_el is not None else ""
-
-                cik_match = re.search(r"CIK=(\d+)", link)
-                cik = cik_match.group(1) if cik_match else None
-
-                # Title format: "D - Company Name (CIK)" or "D/A - Company Name"
-                name_match = re.match(r"^D(?:/A)?\s*-\s*(.+?)(?:\s*\(CIK|\s*$)", title)
-                name = name_match.group(1).strip() if name_match else title.strip()
-
-                # Filter by date
-                if updated:
-                    try:
-                        file_date = datetime.fromisoformat(updated.replace("Z", "+00:00"))
-                        cutoff = datetime.now().astimezone() - timedelta(days=days_back)
-                        if file_date < cutoff:
-                            continue
-                    except ValueError:
-                        pass
-
+            for hit in hits:
+                src = hit.get("_source", {})
+                display_names = src.get("display_names", [])
+                name = display_names[0] if display_names else "Unknown"
+                ciks = src.get("ciks", [])
+                cik = ciks[0].lstrip("0") if ciks else None
+                biz_locs = src.get("biz_locations", [])
+                biz_states = src.get("biz_states", [])
                 results.append({
                     "company_name": name,
-                    "filing_date": updated[:10] if updated else None,
-                    "accession_number": None,
+                    "filing_date": src.get("file_date"),
+                    "accession_number": src.get("adsh"),
                     "cik": cik,
-                    "state": state,
-                    "filing_url": link,
-                    "source_method": f"atom_{state}",
+                    "biz_locations": biz_locs,
+                    "biz_states": biz_states,
+                    "source_method": f"efts_loc",
                 })
 
-            logger.info(f"Atom {state}: got {len(entries)} entries (offset {offset})")
+            logger.info(
+                f"EFTS location '{location_query}': got {len(hits)} "
+                f"(offset {offset}, total {total_count})"
+            )
 
-            if len(entries) < page_size:
+            if len(hits) < page_size or offset + page_size >= total_count:
                 break
             offset += page_size
-            time.sleep(1)  # SEC rate limit: 10 req/sec
+            time.sleep(0.5)
 
         except Exception as e:
-            logger.warning(f"Atom feed failed for state={state}: {e}")
+            logger.warning(f"EFTS location search failed: {e}")
             break
 
     return results
@@ -430,17 +460,23 @@ def fetch_form_d_details(cik: str = None, accession: str = None) -> Optional[Dic
             "related_persons": [],
         }
 
-        # Parse amounts
+        # Parse amounts (handle "Indefinite" and other non-numeric values)
         for field, keys in [
             ("amount_sold", ["totalAmountSold"]),
             ("total_offering", ["totalOfferingAmount"]),
         ]:
             val = find_any(*keys)
             if val:
-                try:
-                    result[field] = float(val.replace(",", ""))
-                except ValueError:
-                    pass
+                cleaned = val.replace(",", "").strip()
+                if cleaned.lower() == "indefinite":
+                    # Indefinite offering = open-ended fund raise, still a valid filing
+                    result[field] = None
+                    result[f"{field}_indefinite"] = True
+                else:
+                    try:
+                        result[field] = float(cleaned)
+                    except ValueError:
+                        pass
 
         # Parse related persons / investors (name + title)
         for elem in root.iter():
@@ -479,9 +515,11 @@ def fetch_form_d_details(cik: str = None, accession: str = None) -> Optional[Dic
                             "title": None,
                         })
 
-        # Check if NYC
+        # Check city from address
         address = f"{result.get('city', '')} {result.get('state', '')} {result.get('zip', '')} {result.get('street', '')}"
-        result["is_nyc"] = _is_nyc(address)
+        detected_city = _detect_city_from_address(address)
+        result["is_nyc"] = detected_city == "New York"
+        result["detected_city"] = detected_city
 
         return result
 
@@ -506,34 +544,57 @@ def run_sec_scraper(days_back: int = 180):
     total_new = 0
 
     try:
+        from config import get_enabled_cities
         all_filings = []
         seen_names = set()
 
-        # Method A: EFTS full-text search for NYC mentions
-        for query in ['"New York"', '"Manhattan"', '"Brooklyn"', "NYC startup"]:
-            results = search_efts(query, days_back=days_back, max_results=100)
-            for r in results:
-                norm = normalize_company_name(r["company_name"])
-                if norm not in seen_names:
-                    seen_names.add(norm)
-                    all_filings.append(r)
+        # ── City-specific EFTS location queries ──────────────────
+        # Build location queries per city: "City, ST" format matches
+        # the biz_locations field in EFTS (e.g. "New York, NY")
+        _CITY_LOCATION_QUERIES = {
+            "New York": ['"New York, NY"', '"Brooklyn, NY"', '"Manhattan"'],
+            "Boston": ['"Boston, MA"', '"Cambridge, MA"'],
+            "Washington DC": ['"Washington, DC"', '"Arlington, VA"', '"Bethesda, MD"'],
+            "San Francisco": ['"San Francisco, CA"', '"Palo Alto, CA"', '"Menlo Park, CA"'],
+        }
 
-        # Method B: Atom feed for NY-registered entities
-        ny_results = search_atom_feed(state="NY", days_back=days_back, max_results=200)
-        for r in ny_results:
-            norm = normalize_company_name(r["company_name"])
-            if norm not in seen_names:
-                seen_names.add(norm)
-                all_filings.append(r)
+        seen_queries = set()
 
-        # Method C: Atom feed for DE-registered entities (most VC startups)
-        de_results = search_atom_feed(state="DE", days_back=days_back, max_results=200)
-        for r in de_results:
-            norm = normalize_company_name(r["company_name"])
-            if norm not in seen_names:
-                seen_names.add(norm)
-                r["needs_address_check"] = True
-                all_filings.append(r)
+        # Method A: EFTS full-text search — per-city keyword queries
+        for city_cfg in get_enabled_cities():
+            city_name = city_cfg["display_name"]
+            for query in city_cfg.get("sec_efts_queries", []):
+                if query in seen_queries:
+                    continue
+                seen_queries.add(query)
+                results = search_efts(query, days_back=days_back, max_results=200)
+                for r in results:
+                    norm = normalize_company_name(r["company_name"])
+                    if norm not in seen_names:
+                        seen_names.add(norm)
+                        r["expected_city"] = city_name
+                        all_filings.append(r)
+
+        # Method B: EFTS location-based search — "City, ST" format
+        # This replaces the broken Atom feed which returned a company
+        # directory instead of recent filings.
+        for city_cfg in get_enabled_cities():
+            city_name = city_cfg["display_name"]
+            loc_queries = _CITY_LOCATION_QUERIES.get(city_name, [])
+            for loc_q in loc_queries:
+                if loc_q in seen_queries:
+                    continue
+                seen_queries.add(loc_q)
+                loc_results = search_efts_by_location(
+                    loc_q, days_back=days_back, max_results=200,
+                )
+                for r in loc_results:
+                    norm = normalize_company_name(r["company_name"])
+                    if norm not in seen_names:
+                        seen_names.add(norm)
+                        # Confirm city from biz_locations if available
+                        r["expected_city"] = city_name
+                        all_filings.append(r)
 
         total_found = len(all_filings)
         logger.info(f"Total unique filings: {total_found}")
@@ -558,12 +619,31 @@ def run_sec_scraper(days_back: int = 180):
                 if i % 10 == 0:
                     time.sleep(1)
 
-            # For DE companies, skip if NOT in NYC
-            if filing.get("needs_address_check") and details:
-                if not details.get("is_nyc"):
-                    continue
-            elif filing.get("needs_address_check") and not details:
+            # Verify city from XML address — the EFTS full-text search matches
+            # "New York" anywhere in the filing, not just the company address.
+            # We must confirm the company is actually located in an enabled city.
+            if details and details.get("detected_city"):
+                filing["expected_city"] = details["detected_city"]
+            elif details and not details.get("detected_city"):
+                # XML parsed but address didn't match any enabled city — skip
+                logger.debug(
+                    f"Skipping non-matching city: {filing['company_name']} "
+                    f"(city={details.get('city')}, state={details.get('state')})"
+                )
                 continue
+            elif not details:
+                # No XML — check biz_locations from EFTS response as fallback
+                biz_locs = filing.get("biz_locations", [])
+                detected = None
+                for loc in biz_locs:
+                    detected = _detect_city_from_address(loc)
+                    if detected:
+                        break
+                if detected:
+                    filing["expected_city"] = detected
+                else:
+                    # Can't confirm city at all — skip
+                    continue
 
             enriched.append((filing, details))
 
@@ -593,10 +673,19 @@ def run_sec_scraper(days_back: int = 180):
                 category_name = classify_sector(f"{company_name} {industry}")
                 cat_id = get_category_id(conn, category_name) if category_name else None
 
-                filing_url = filing.get("filing_url") or (
-                    f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
-                    f"&company={company_name}&type=D&dateb=&owner=include&count=10"
-                )
+                # Build direct filing URL from CIK + accession when available
+                filing_url = filing.get("filing_url")
+                if not filing_url and filing.get("cik") and filing.get("accession_number"):
+                    acc_clean = filing["accession_number"].replace("-", "")
+                    filing_url = (
+                        f"https://www.sec.gov/Archives/edgar/data/"
+                        f"{filing['cik']}/{acc_clean}/"
+                    )
+                if not filing_url:
+                    filing_url = (
+                        f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                        f"&CIK={filing.get('cik', '')}&type=D&dateb=&owner=include&count=10"
+                    )
 
                 raw_text = json.dumps({
                     "cik": filing.get("cik"),
@@ -612,6 +701,7 @@ def run_sec_scraper(days_back: int = 180):
                 description = f"{industry} company" if industry else None
 
                 # ── Unified Quality Gate ──
+                deal_city = filing.get("expected_city", "New York")
                 accepted, reason, cleaned = validate_deal(
                     conn,
                     company_name=company_name,
@@ -620,10 +710,11 @@ def run_sec_scraper(days_back: int = 180):
                     date_announced=filing.get("filing_date"),
                     source_type="sec_filing",
                     description=description,
-                    is_nyc=True,  # already NYC-filtered above
+                    is_nyc=(deal_city == "New York"),
                     raw_text=raw_text,
                     source_url=filing_url,
                     category_id=cat_id,
+                    city=deal_city,
                 )
 
                 if not accepted:
