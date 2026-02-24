@@ -669,13 +669,80 @@ def scrape_status():
     return jsonify({**_scrape_status, "total_deals": deal_count})
 
 
+# ── One-time data cleanup migration ──────────────────────────
+def _run_data_cleanup():
+    """Clean junk entities and duplicates from the database.
+    Safe to run multiple times — idempotent.
+    """
+    import re
+    conn = get_connection()
+
+    # 1. Strip CIK suffixes from company names
+    cik_re = re.compile(r"\s*\(CIK\s*\d+\)\s*$", re.I)
+    legal_re = re.compile(r",?\s*(Inc\.?|LLC|L\.?P\.?|Corp\.?|Ltd\.?)$", re.I)
+    cik_deals = conn.execute(
+        "SELECT id, company_name FROM deals WHERE company_name LIKE '%CIK%'"
+    ).fetchall()
+    if cik_deals:
+        from database import _normalize_name
+        for deal in cik_deals:
+            name = cik_re.sub("", deal["company_name"]).strip()
+            name = legal_re.sub("", name).strip()
+            if name:
+                conn.execute(
+                    "UPDATE deals SET company_name = ?, company_name_normalized = ? WHERE id = ?",
+                    (name, _normalize_name(name), deal["id"]),
+                )
+            else:
+                conn.execute("DELETE FROM deals WHERE id = ?", (deal["id"],))
+        conn.commit()
+        logger.info(f"Cleanup: fixed {len(cik_deals)} CIK-tainted company names")
+
+    # 2. Remove non-corporation entities (LPs, LLCs = fund vehicles, not startups)
+    fund_re = re.compile(
+        r"\b(Fund|Feeder|Offshore|Holdings|Capital Partners|Capital,?\s*L\.?P|"
+        r"Equity Fund|Investment Fund|Coinvestment|"
+        r"Aggregator|Master Portfolio|"
+        r"Asset Backed|BDC|Ventures?\s+[IVXLC]+\b|"
+        r"DST\b|REIT|Trust\b|"
+        r"Investors?\b|Partners,?\s*L\.?P|Deep Value|"
+        r"Bioventures|Private Equity|Public Markets|Selector)\b",
+        re.I,
+    )
+    junk = conn.execute(
+        "SELECT id, company_name FROM deals WHERE source_type IN ('sec_filing', 'de_filing')"
+    ).fetchall()
+    removed = 0
+    for deal in junk:
+        if fund_re.search(deal["company_name"]):
+            conn.execute("DELETE FROM deal_firms WHERE deal_id = ?", (deal["id"],))
+            conn.execute("DELETE FROM deal_investors WHERE deal_id = ?", (deal["id"],))
+            conn.execute("DELETE FROM deal_metadata WHERE deal_id = ?", (deal["id"],))
+            conn.execute("DELETE FROM deals WHERE id = ?", (deal["id"],))
+            removed += 1
+    if removed:
+        conn.commit()
+        logger.info(f"Cleanup: removed {removed} fund vehicle deals")
+
+    # 3. Run cross-source dedup (handles same-deal-different-stage duplicates)
+    try:
+        from quality_control import merge_cross_source_duplicates
+        merged = merge_cross_source_duplicates(conn)
+        if merged:
+            logger.info(f"Cleanup: dedup removed {merged} duplicate deals")
+    except Exception as e:
+        logger.warning(f"Dedup cleanup warning: {e}")
+
+
 # Start the scheduler when running under gunicorn (production)
 if not os.environ.get("FLASK_DEBUG"):
+    _run_data_cleanup()
     _start_scheduler()
 
 
 if __name__ == "__main__":
     init_db()
+    _run_data_cleanup()
     debug = os.environ.get("FLASK_DEBUG", "false").lower() in ("1", "true", "yes")
     if not debug:
         _start_scheduler()
