@@ -575,6 +575,30 @@ def _run_portfolio_scrape():
         except Exception as e:
             logger.warning(f"Portfolio QC warning: {e}")
 
+        # Scrape team pages to populate real individual investors
+        try:
+            from scrapers.firm_scraper import run_team_scraper
+            team_stats = run_team_scraper()
+            logger.info(
+                f"Team scraper: {team_stats['firms_scraped']} firms, "
+                f"{team_stats['team_members_found']} members, "
+                f"{team_stats['investors_created']} created"
+            )
+        except Exception as e:
+            logger.warning(f"Team scraper warning: {e}")
+
+        # Clean investor table (remove firm-name entries, junk)
+        try:
+            from quality_control import clean_investors
+            inv_stats = clean_investors(conn)
+            if inv_stats["removed"] + inv_stats["junk_removed"] > 0:
+                logger.info(
+                    f"Investor cleanup: {inv_stats['removed']} firm-names, "
+                    f"{inv_stats['junk_removed']} junk removed"
+                )
+        except Exception as e:
+            logger.warning(f"Investor cleanup warning: {e}")
+
         # Auto-verify deal-firm links against portfolio data
         try:
             from routes.verified import run_portfolio_verification
@@ -768,6 +792,19 @@ def _run_data_cleanup():
             logger.info(f"Cleanup: QC merged {firm_removed} duplicate firms")
     except Exception as e:
         logger.warning(f"Firm cleanup warning: {e}")
+
+    # 6. Clean investor table (remove firm-name entries, junk like "<UNKNOWN>")
+    try:
+        from quality_control import clean_investors
+        inv_stats = clean_investors(conn)
+        total_inv = inv_stats["removed"] + inv_stats["junk_removed"]
+        if total_inv:
+            logger.info(
+                f"Cleanup: investor QC removed {inv_stats['removed']} firm-names, "
+                f"{inv_stats['junk_removed']} junk, relinked {inv_stats['relinked']} deals"
+            )
+    except Exception as e:
+        logger.warning(f"Investor cleanup warning: {e}")
 
 
 # Start the scheduler when running under gunicorn (production)

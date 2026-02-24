@@ -553,12 +553,25 @@ _FIRM_KEYWORDS = (
 )
 
 
+def _is_firm_name(name: str) -> bool:
+    """Return True if name looks like a VC firm, not an individual person."""
+    name_lower = name.lower()
+    if any(kw in name_lower for kw in _FIRM_KEYWORDS):
+        return True
+    # Single capitalized word that's not a common first name — likely a firm
+    # (e.g. "Intel", "AMD", "Google")
+    if not _INDIVIDUAL_RE.match(name) and not " " in name.strip():
+        return True
+    return False
+
+
 def link_investors_to_deal(conn, deal_id: int, investors: List[Dict],
                            upsert_investor_fn, link_deal_investor_fn,
                            upsert_firm_fn, link_deal_firm_fn):
     """
     Link investor and firm records to a deal.
-    Accepts DB helper functions to avoid importing database at module level.
+    Firm names are linked via deal_firms only (NOT as investor records).
+    Individual names are linked as investor records via deal_investors.
     """
     # Cache all firms once to avoid N queries for fuzzy matching
     all_firms = conn.execute("SELECT id, name FROM firms").fetchall()
@@ -568,7 +581,7 @@ def link_investors_to_deal(conn, deal_id: int, investors: List[Dict],
         inv_name = inv_data["name"]
         role = inv_data.get("role", "participant")
 
-        # Exact match (case-insensitive)
+        # Check if this name matches a known firm
         firm_row = conn.execute(
             "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)",
             (inv_name,)
@@ -582,23 +595,20 @@ def link_investors_to_deal(conn, deal_id: int, investors: List[Dict],
                     firm_id = firm["id"]
                     break
 
-        inv_id = upsert_investor_fn(conn, name=inv_name, firm_id=firm_id)
-        link_deal_investor_fn(conn, deal_id, inv_id)
-
         if firm_id:
+            # Known firm — link as firm only, NOT as an investor record
             link_deal_firm_fn(conn, deal_id, firm_id, role)
+        elif _is_firm_name(inv_name) and not _INDIVIDUAL_RE.match(inv_name):
+            # Looks like a firm name — create firm record + link, skip investor
+            new_firm_id = upsert_firm_fn(conn, inv_name)
+            link_deal_firm_fn(conn, deal_id, new_firm_id, role)
+            all_firms.append({"id": new_firm_id, "name": inv_name})
         else:
-            # Auto-create firm if name looks like a firm, not an individual
-            name_lower = inv_name.lower()
-            if (any(kw in name_lower for kw in _FIRM_KEYWORDS)
-                    and not _INDIVIDUAL_RE.match(inv_name)):
-                new_firm_id = upsert_firm_fn(conn, inv_name, location="Unknown")
-                link_deal_firm_fn(conn, deal_id, new_firm_id, role)
-                # Add to cache so subsequent investors in same deal can match
-                all_firms.append({"id": new_firm_id, "name": inv_name})
-
-        if role == "lead" and lead_investor_id is None:
-            lead_investor_id = inv_id
+            # Individual person — create investor record + link
+            inv_id = upsert_investor_fn(conn, name=inv_name)
+            link_deal_investor_fn(conn, deal_id, inv_id)
+            if role == "lead" and lead_investor_id is None:
+                lead_investor_id = inv_id
 
     if lead_investor_id:
         conn.execute(

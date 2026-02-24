@@ -1264,3 +1264,131 @@ def clean_firms(conn) -> int:
         conn.commit()
         logger.info(f"Firm cleanup: merged {removed} duplicate firms")
     return removed
+
+
+# Keywords that indicate a VC firm, not an individual person
+_INVESTOR_FIRM_KEYWORDS = (
+    "capital", "ventures", "partners", "group", "labs", "fund",
+    "invest", "vc", "advisors", "management", "equity", "holdings",
+    "accelerator", "studio", "angels", "catalyst", "syndicate",
+    "coalition", "bank", "pension", " inc", " llc", " ltd",
+    "trading", "manufacturer",
+)
+
+# Matches person names: "First Last", "First M. Last", "Sam Bankman-Fried"
+# Allows for accented chars, hyphens, apostrophes, ALL CAPS names
+_PERSON_NAME_RE = re.compile(
+    r"^[A-ZÀ-Ü][a-zà-ü\'-]+\s+(?:[A-ZÀ-Ü]\.?\s+)?[A-ZÀ-Ü][A-Za-zà-ü\'-]+(?:\s+(?:Jr|Sr|III?|IV)\.?)?$"
+    r"|^[A-Z][A-Z]+\s+[A-Z][A-Z]+$"  # ALL CAPS names like "LARS JOHANSSON"
+    r"|^[A-Z][A-Z]\s+[A-Z][a-z]"     # "DJ Seo" style
+)
+
+# Obvious junk patterns for investor names
+_JUNK_INVESTOR_RE = re.compile(
+    r"^(<UNKNOWN>|unknown|undisclosed|unnamed|various|multiple|several|angel)"
+    r"|^\d+\s+investor"
+    r"|^n/a\b"
+    r"|^N/A\b"
+    r"|^-\s",
+    re.I,
+)
+
+
+def _investor_looks_like_firm(name: str) -> bool:
+    """Return True if an investor name looks like a firm, not a person."""
+    if not name:
+        return False
+    name_lower = name.lower()
+    # Contains firm keywords
+    if any(kw in name_lower for kw in _INVESTOR_FIRM_KEYWORDS):
+        return True
+    # Single word, uppercase start, no spaces — likely a firm (Intel, AMD, Google)
+    if " " not in name.strip() and name[0].isupper() and len(name) > 2:
+        return True
+    # Starts with digits — not a person name (e.g. "01A", "37 Angels")
+    if name and name[0].isdigit():
+        return True
+    # Contains parentheses — likely an org abbreviation
+    if "(" in name:
+        return True
+    return False
+
+
+def clean_investors(conn) -> Dict:
+    """
+    Remove firm-name entries and junk from the investors table.
+    Re-links deal connections to firm records where possible.
+
+    Returns dict with counts: {removed, relinked, junk_removed}.
+    """
+    stats = {"removed": 0, "relinked": 0, "junk_removed": 0}
+
+    # 1. Delete obvious junk entries
+    junk_rows = conn.execute("SELECT id, name FROM investors").fetchall()
+    junk_ids = []
+    for r in junk_rows:
+        if _JUNK_INVESTOR_RE.search(r["name"] or ""):
+            junk_ids.append(r["id"])
+
+    if junk_ids:
+        ph = ",".join(["?"] * len(junk_ids))
+        # Clear lead_investor_id references
+        conn.execute(f"UPDATE deals SET lead_investor_id = NULL WHERE lead_investor_id IN ({ph})", junk_ids)
+        conn.execute(f"DELETE FROM deal_investors WHERE investor_id IN ({ph})", junk_ids)
+        conn.execute(f"DELETE FROM investors WHERE id IN ({ph})", junk_ids)
+        stats["junk_removed"] = len(junk_ids)
+
+    # 2. Find investor records that are actually firm names
+    all_investors = conn.execute(
+        "SELECT id, name, firm_id FROM investors"
+    ).fetchall()
+
+    firm_investor_ids = []
+    for inv in all_investors:
+        name = inv["name"]
+        # Skip if it looks like a real person name
+        if _PERSON_NAME_RE.match(name):
+            continue
+        # Check if it matches a known firm
+        firm_row = conn.execute(
+            "SELECT id FROM firms WHERE LOWER(name) = LOWER(?)", (name,)
+        ).fetchone()
+        if firm_row:
+            # This investor record IS a firm — relink deals to the firm, then delete
+            firm_id = firm_row["id"]
+            deal_links = conn.execute(
+                "SELECT deal_id FROM deal_investors WHERE investor_id = ?",
+                (inv["id"],)
+            ).fetchall()
+            for dl in deal_links:
+                # Create deal_firms link if it doesn't exist
+                existing = conn.execute(
+                    "SELECT 1 FROM deal_firms WHERE deal_id = ? AND firm_id = ?",
+                    (dl["deal_id"], firm_id)
+                ).fetchone()
+                if not existing:
+                    conn.execute(
+                        "INSERT INTO deal_firms (deal_id, firm_id, role) VALUES (?, ?, 'participant')",
+                        (dl["deal_id"], firm_id)
+                    )
+                    stats["relinked"] += 1
+            firm_investor_ids.append(inv["id"])
+        elif _investor_looks_like_firm(name):
+            # Looks like a firm but doesn't match one — just remove
+            firm_investor_ids.append(inv["id"])
+
+    if firm_investor_ids:
+        ph = ",".join(["?"] * len(firm_investor_ids))
+        conn.execute(f"UPDATE deals SET lead_investor_id = NULL WHERE lead_investor_id IN ({ph})", firm_investor_ids)
+        conn.execute(f"DELETE FROM deal_investors WHERE investor_id IN ({ph})", firm_investor_ids)
+        conn.execute(f"DELETE FROM investors WHERE id IN ({ph})", firm_investor_ids)
+        stats["removed"] = len(firm_investor_ids)
+
+    total = stats["removed"] + stats["junk_removed"]
+    if total:
+        conn.commit()
+        logger.info(
+            f"Investor cleanup: removed {stats['removed']} firm-name entries, "
+            f"{stats['junk_removed']} junk entries, relinked {stats['relinked']} deals to firms"
+        )
+    return stats
