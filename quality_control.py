@@ -1196,6 +1196,31 @@ def clean_portfolio_companies(conn) -> int:
             conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
             pc_removed += 1
 
+    # 6. Catch-all: delete anything that fails is_valid_portfolio_name()
+    #    This catches patterns the SQL conditions above missed.
+    all_rows = conn.execute(
+        "SELECT id, company_name FROM portfolio_companies"
+    ).fetchall()
+    for r in all_rows:
+        if not is_valid_portfolio_name(r["company_name"]):
+            conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
+            pc_removed += 1
+
+    # 7. Deduplicate within the same firm (keep lowest id)
+    dupe_rows = conn.execute("""
+        SELECT firm_id, company_name_normalized, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
+        FROM portfolio_companies
+        WHERE company_name_normalized IS NOT NULL AND company_name_normalized != ''
+        GROUP BY firm_id, company_name_normalized
+        HAVING COUNT(*) > 1
+    """).fetchall()
+    for d in dupe_rows:
+        ids = sorted(int(x) for x in d[2].split(","))
+        loser_ids = ids[1:]  # keep the first (oldest)
+        ph = ",".join(["?"] * len(loser_ids))
+        conn.execute(f"DELETE FROM portfolio_companies WHERE id IN ({ph})", loser_ids)
+        pc_removed += len(loser_ids)
+
     if pc_removed:
         conn.commit()
         logger.info(f"Portfolio cleanup: removed/fixed {pc_removed} junk entries")
