@@ -778,8 +778,20 @@ def scrape_firm_team(firm_name: str, website: str, firm_id: int) -> List[Dict]:
         # Skip if name doesn't look like a person name (too short, has digits, etc.)
         if len(name) < 3 or len(name) > 60 or re.search(r"\d", name):
             continue
-        # Skip if name looks like a company/section header
-        if any(kw in name.lower() for kw in ["portfolio", "team", "about", "contact", "investment"]):
+        # Skip if name looks like a company/section header or nav text
+        _SKIP_NAME_KW = [
+            "portfolio", "team", "about", "contact", "investment",
+            "our ", "meet ", "what we", "how we", "we invest",
+            "values", "our focus", "our blog", "startups",
+            "our model", "our network", "founder catalyst",
+            "startup weekend", "program tracks", "no results",
+            "privacy", "connect",
+        ]
+        if any(kw in name.lower() for kw in _SKIP_NAME_KW):
+            continue
+        # Skip titles masquerading as names
+        if name in ("Managing Partner", "Vice President", "Partner",
+                     "General Partner", "Principal", "Associate"):
             continue
 
         # Extract title from adjacent text elements
@@ -788,6 +800,18 @@ def scrape_firm_team(firm_name: str, website: str, firm_id: int) -> List[Dict]:
             if text and text != name and _INVESTMENT_TITLES_RE.search(text):
                 title = text
                 break
+
+        # Fix title concatenation: strip person name prefix from title
+        # Catches "Abe BassanPartner" -> "Partner", "Chi-Hua ChienCo-Founder" -> "Co-Founder"
+        if title and name and title.startswith(name):
+            title = title[len(name):].strip()
+        # Strip "ExperienceEducation" suffix from titles (scraped from tab nav)
+        if title:
+            title = re.sub(r'ExperienceEducation$', '', title).strip()
+            title = re.sub(r'Bio & More.*$', '', title).strip()
+        # If title became empty after cleaning, set to None
+        if not title:
+            title = None
 
         # Extract LinkedIn URL
         for a in card.find_all("a", href=True):

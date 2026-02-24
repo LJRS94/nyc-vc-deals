@@ -141,6 +141,12 @@ _BAD_NAME_PATTERNS = [
     re.compile(r"[\u2019']s\s+(new|latest|next|first|big|recent)\b", re.I),  # possessive + adjective = headline
     re.compile(r"^\d+\s"),  # starts with number (street address or list)
     re.compile(r"^[\$']"),  # starts with $ or quote
+    # Scraped metadata: "M Series B PREDICTION MARKETS Novig", "M BLOCKCHAIN Prometheum"
+    re.compile(r"^M\s+(?:Series [A-E]|Pre-Seed|Seed|Venture|Growth)?\s*[A-Z]{2,}", re.I),
+    # Location prefix: "Boston's Ginkgo Bioworks"
+    re.compile(r"^(?:Boston|NYC|New York|SF|Chicago|LA|London|Berlin|Paris)(?:'s?\s)", re.I),
+    # Person description instead of company: "Former Tesla exec"
+    re.compile(r"^(?:Former|Ex-|Current|Longtime)\s+\w+\s+(?:exec|CEO|CTO|founder|employee)", re.I),
 ]
 
 
@@ -636,16 +642,16 @@ def record_metrics(conn, source_type: str, submitted: int,
 _JUNK_PORTFOLIO_RE = re.compile(
     r"^(GET IN TOUCH|Go-To-Market|View All|Load More|Show More|"
     r"Learn More|Read More|Visit Website|Visit Site|Back to Top|Contact Us|"
-    r"About Us|About|Our Team|Our Portfolio|Our Startups|Our Mission|See All|See More|Subscribe|"
+    r"About Us|About\b.*|Our Team|Our Portfolio|Our Startups|Our Mission|See All|See More|Subscribe|"
     r"Sign Up|Log In|Login|Sign In|Privacy Policy|Privacy|Privacy Center|"
-    r"Terms of Service|Cookie Policy|Cookie Settings|"
+    r"Terms of Service|Terms of Use|Terms|Cookie Policy|Cookie Settings|"
     r"Filter|Sort|Search|Menu|Close|Open|All Companies|All|"
     r"Current Portfolio|Previous Portfolio|Active|Exited|"
-    r"Limited Partner Login|Investor Portal|LP Portal|LP Log-In|"
+    r"Limited Partner Login|Investor Portal|LP Portal|LP Log-In|Investor Login|"
     r"For Investors|For Founders|For LPs|For LP's|How We Invest|"
     r"Series [a-e]|Series [A-E]|Pre-Seed|Seed|IPO|"
     r"Gaming|Health|Health Tech|Consumer|Finance|Media|Software|Education|"
-    r"Marketplace|Other|Resources|News|Blog|Press|Insights|"
+    r"Marketplace|Other|Resources|News|Blog|Press|Insights|Newsletter|"
     r"Team|Studio|LinkedIn|Twitter|Facebook|Instagram|Podcast|"
     r"FAQs?|Reset|Apply|Cancel|Submit|Back|Next|Previous|More|Less|"
     r"Fundraising|Founder Services|Investments|Partners|Network|"
@@ -655,6 +661,7 @@ _JUNK_PORTFOLIO_RE = re.compile(
     r"AI Apps|AI Infrastructure & Developer Platforms|"
     r"Data, AI & Machine Learning|Energy & Infrastructure|"
     r"Enterprise Apps & Vertical AI|Infrastructure & Developer Tools|"
+    r"Jobs|Portfolio Jobs|Digital Health|Life Sciences|"
     r"Loading\.\.\.)$",
     re.I,
 )
@@ -699,11 +706,16 @@ def is_valid_portfolio_name(name: str) -> bool:
     if not name or len(name.strip()) < 2:
         return False
     name = name.strip()
+    # Strip invisible unicode chars (zero-width joiners, etc.)
+    name = re.sub(r'[\u200b-\u200f\u2028-\u202f\u2060\ufeff]', '', name)
     if len(name) > 60:
         return False
     if re.match(r"^\d{4}$", name):
         return False
     if re.match(r"^\d+$", name):
+        return False
+    # "Cognition-Developer of AI-powered coding assistant, Devin" pattern
+    if re.search(r'-(?:Developer|Creator|Maker|Builder|Provider)\s+of\s', name):
         return False
     if _JUNK_PORTFOLIO_RE.match(name):
         return False
@@ -732,6 +744,21 @@ def is_valid_portfolio_name(name: str) -> bool:
         return False
     if re.search(r'[a-z]ALL[A-Z]|[A-Z]ALL[a-z]|ALL$', name) and len(name) > 10:
         return False
+    # "StatusAll", "StatusLive", "StatusExited", "StatusCurrent"
+    if re.match(r'^Status[A-Z]', name):
+        return False
+    # "ConsumerCurrent", "ConsumerExited", "EnterpriseCurrent", "EnterpriseExited"
+    if re.match(r'^(Consumer|Enterprise|AI|Fintech|Healthcare|Commerce)(Current|Exited|Active|Live)$', name):
+        return False
+    # "SectorData Analytics & Infrastructure", "SectorEducation & Training, SaaS"
+    if re.match(r'^Sector[A-Z]', name):
+        return False
+    # "Investment Year2025", "Investment Year2024"
+    if re.match(r'^Investment\s+Year\d{4}$', name):
+        return False
+    # "SpyceFoodAll" — company + category + All/Current/Exited
+    if re.search(r'(Food|Finance|Consumer|Enterprise|Health|Media|Commerce|Marketplace)(All|Current|Exited)$', name) and len(name) > 8:
+        return False
 
     # ── Country/geography filter labels ──
     if re.match(r'^Country[A-Z]', name):
@@ -759,7 +786,22 @@ def is_valid_portfolio_name(name: str) -> bool:
     # ── Meta/nav text about the portfolio itself ──
     if re.match(r'^(Select investments|Showing results|Showcasing |View (Research|Portfolio|All)|'
                 r'Click here|Explore Our|MetaProp Portfolio|Hypothesis Portfolio|'
-                r'Launched in |Simple consumer |Current$)', name, re.I):
+                r'Launched in |Simple consumer |Current$|'
+                r'Backed at |See all backed|Our Advisors|Our Culture|'
+                r'Explore CTEK|Visit Our|Visit our|'
+                r'Diverse perspectives|Tag Field|hello@|'
+                r'@\w+|Info$|Industries$|Grants$|Theses$|Writing$|Connect$|'
+                r'No Results Found|Privacy Settings|'
+                r'\(c\) \d{4}|copyright \d{4})', name, re.I):
+        return False
+    # Email addresses
+    if re.match(r'^[\w.+-]+@[\w.-]+\.\w+$', name):
+        return False
+    # Twitter handles as names
+    if re.match(r'^@\w+', name):
+        return False
+    # Icon labels ("Twitter | X Icon", "LinkedIn Icon", "Youtube Icon")
+    if re.search(r'\bIcon$', name):
         return False
 
     # ── Concatenated multi-stage labels ──
@@ -783,6 +825,12 @@ def is_valid_portfolio_name(name: str) -> bool:
         return False
 
     # Sentence-like patterns (descriptions scraped as names)
+    # Ends with period — it's a sentence
+    if name.endswith('.') and len(name) > 10:
+        return False
+    # "The age of agents", "The future of work" — article + noun + prep + noun
+    if re.match(r'^The\s+\w+\s+of\s+\w+', name, re.I) and len(name) < 30:
+        return False
     if len(name) > 40 and any(w in name_lower for w in
             [" is a ", " is an ", " provides ", " delivers ", " develops ",
              " offers ", " enables ", " builds ", " allows ", " revolutionizes ",
@@ -1252,6 +1300,113 @@ def clean_portfolio_companies(conn) -> int:
             )
             pc_removed += count
 
+    # 2b. Fix junk websites: "#close" (Bessemer), firm's own domain, bare domains
+    # Bessemer: all websites are "#close" (modal close button scrape artifact)
+    conn.execute(
+        "UPDATE portfolio_companies SET company_website = NULL "
+        "WHERE company_website = '#close'"
+    )
+    # Slow Ventures: websites pointing to firm's own domain
+    conn.execute(
+        "UPDATE portfolio_companies SET company_website = NULL "
+        "WHERE company_website IN ('slow.co', 'https://www.slow.co', 'https://slow.co')"
+    )
+    # General Catalyst: websites pointing to firm's directory pages
+    conn.execute(
+        "UPDATE portfolio_companies SET company_website = NULL "
+        "WHERE company_website LIKE '%generalcatalyst.com/companies/%'"
+    )
+    # Bain Capital: websites pointing to firm category pages
+    conn.execute(
+        "UPDATE portfolio_companies SET company_website = NULL "
+        "WHERE company_website LIKE '%baincapitalventures.com/domain/%'"
+    )
+    # Bare domains without protocol — add https://
+    bare_rows = conn.execute(
+        "SELECT id, company_website FROM portfolio_companies "
+        "WHERE company_website IS NOT NULL "
+        "AND company_website NOT LIKE 'http%' "
+        "AND company_website NOT LIKE '#%' "
+        "AND company_website LIKE '%.%'"
+    ).fetchall()
+    for r in bare_rows:
+        conn.execute(
+            "UPDATE portfolio_companies SET company_website = ? WHERE id = ?",
+            ("https://" + r["company_website"], r["id"]),
+        )
+
+    # 2c. Fix Great Oaks boolean concatenation: "CardlessFinancetrue" -> "Cardless"
+    # Pattern: real_name + SectorCategory + true/false
+    bool_rows = conn.execute(
+        "SELECT id, company_name, firm_id FROM portfolio_companies "
+        "WHERE company_name GLOB '*[a-z][A-Z]*true' OR company_name GLOB '*[a-z][A-Z]*false' "
+        "OR company_name LIKE '%true' OR company_name LIKE '%false'"
+    ).fetchall()
+    _SECTORS_FOR_BOOL = {
+        'Finance', 'Consumer', 'Marketplace', 'Artificial Intelligence',
+        'Health', 'Healthcare', 'Enterprise', 'SaaS', 'AI', 'Fintech',
+        'Commerce', 'Education', 'Media', 'Crypto', 'Climate', 'Security',
+        'Food', 'Logistics', 'Robotics', 'Hardware', 'Software', 'Data',
+        'Real Estate', 'Insurance', 'Legal', 'Sports', 'Gaming', 'Social',
+    }
+    for r in bool_rows:
+        name = r["company_name"]
+        # Try to strip sector+boolean suffix
+        cleaned = re.sub(r'(' + '|'.join(re.escape(s) for s in _SECTORS_FOR_BOOL) + r')(true|false)$', '', name)
+        if cleaned == name:
+            # Fallback: strip just true/false if preceded by a category-like word
+            cleaned = re.sub(r'[A-Z][a-z]+(true|false)$', '', name)
+        if cleaned and cleaned != name and len(cleaned) >= 2:
+            # Check if clean version already exists for this firm
+            exists = conn.execute(
+                "SELECT id FROM portfolio_companies WHERE firm_id = ? AND company_name = ?",
+                (r["firm_id"], cleaned),
+            ).fetchone()
+            if exists:
+                conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
+            else:
+                conn.execute(
+                    "UPDATE portfolio_companies SET company_name = ?, company_name_normalized = ? WHERE id = ?",
+                    (cleaned, _normalize_name(cleaned), r["id"]),
+                )
+            pc_removed += 1
+
+    # 2d. Fix junk descriptions
+    # SignalFire: "Exit" as description (status label, not description)
+    conn.execute(
+        "UPDATE portfolio_companies SET description = NULL "
+        "WHERE TRIM(description) IN ('Exit', 'Sector', 'exit')"
+    )
+    # M13: concatenated field labels as descriptions
+    conn.execute(
+        "UPDATE portfolio_companies SET description = NULL "
+        "WHERE description LIKE 'Initial investment:%'"
+    )
+
+    # 2e. Fix junk sectors (partner names, fund stages, concatenated junk)
+    conn.execute(
+        "UPDATE portfolio_companies SET sector = NULL "
+        "WHERE sector LIKE '%Pre-Seed%' OR sector LIKE '%Partnered%' "
+        "OR LENGTH(sector) > 60"
+    )
+
+    # 2f. Fix junk lead_partner values
+    conn.execute(
+        "UPDATE portfolio_companies SET lead_partner = NULL "
+        "WHERE lead_partner LIKE 'Partnered%'"
+    )
+
+    # 2g. Regenerate missing normalized names
+    missing_norm = conn.execute(
+        "SELECT id, company_name FROM portfolio_companies "
+        "WHERE company_name_normalized IS NULL OR company_name_normalized = ''"
+    ).fetchall()
+    for r in missing_norm:
+        conn.execute(
+            "UPDATE portfolio_companies SET company_name_normalized = ? WHERE id = ?",
+            (_normalize_name(r["company_name"]), r["id"]),
+        )
+
     # 3. Fix "ExitsTrue/ExitsFalse" suffixes
     exits_rows = conn.execute(
         "SELECT id, company_name, firm_id FROM portfolio_companies "
@@ -1375,14 +1530,25 @@ def clean_firms(conn) -> int:
         if junk_re.search(name):
             junk_ids.append(fid)
 
+    # ── 1b. Remove non-VC operating companies (not venture firms) ──
+    _NON_VC_NAMES = {
+        "openai", "stripe", "nvidia", "google", "paypal",
+        "microsoft", "amazon", "apple", "meta", "tesla",
+    }
+    for f in all_firms:
+        name = f["name"] if isinstance(f, dict) else f[1]
+        fid = f["id"] if isinstance(f, dict) else f[0]
+        if name.lower() in _NON_VC_NAMES and fid not in junk_ids:
+            junk_ids.append(fid)
+
     if junk_ids:
         ph = ",".join(["?"] * len(junk_ids))
-        # Re-link any deals to avoid orphaned references
         conn.execute(f"DELETE FROM deal_firms WHERE firm_id IN ({ph})", junk_ids)
         conn.execute(f"DELETE FROM portfolio_companies WHERE firm_id IN ({ph})", junk_ids)
+        conn.execute(f"DELETE FROM investors WHERE firm_id IN ({ph})", junk_ids)
         conn.execute(f"DELETE FROM firms WHERE id IN ({ph})", junk_ids)
         removed += len(junk_ids)
-        logger.info(f"Firm cleanup: removed {len(junk_ids)} junk firm entries")
+        logger.info(f"Firm cleanup: removed {len(junk_ids)} junk/non-VC firm entries")
 
     # ── 2. Split compound firm names ("X and Y") into individual firms ──
     compound_rows = conn.execute(
@@ -1523,17 +1689,97 @@ def _investor_looks_like_firm(name: str) -> bool:
 def clean_investors(conn) -> Dict:
     """
     Remove firm-name entries and junk from the investors table.
+    Fix title concatenation, embedded credentials, and name formatting.
     Re-links deal connections to firm records where possible.
 
-    Returns dict with counts: {removed, relinked, junk_removed}.
+    Returns dict with counts: {removed, relinked, junk_removed, fixed}.
     """
-    stats = {"removed": 0, "relinked": 0, "junk_removed": 0}
+    from database import _normalize_name
+    stats = {"removed": 0, "relinked": 0, "junk_removed": 0, "fixed": 0}
 
-    # 1. Delete obvious junk entries
+    # 0. Fix data quality issues on ALL investors before filtering
+    all_rows = conn.execute("SELECT id, name, title, name_normalized FROM investors").fetchall()
+    for r in all_rows:
+        name = r["name"] or ""
+        title = r["title"]
+        updates = {}
+
+        # Fix double spaces in names
+        if "  " in name:
+            updates["name"] = re.sub(r"\s+", " ", name).strip()
+
+        # Strip embedded credentials (PhD, MD, JD) from names
+        cred_re = re.compile(r",?\s*(?:Ph\.?D\.?|MD|JD|MBA|M\.?D\.?|D\.?O\.?)\.?\s*$", re.I)
+        cleaned_name = cred_re.sub("", updates.get("name", name)).strip()
+        if cleaned_name != (updates.get("name", name)):
+            updates["name"] = cleaned_name
+
+        # Fix HTML entities in titles
+        if title and "&amp;" in title:
+            updates["title"] = title.replace("&amp;", "&")
+
+        # Fix title: strip person name prefix (name concatenated into title)
+        t = updates.get("title", title)
+        n = updates.get("name", name)
+        if t and n and t.startswith(n):
+            cleaned_title = t[len(n):].strip()
+            # Handle double-name-prefix: "Name\nNameTitle" pattern
+            if cleaned_title.startswith(n):
+                cleaned_title = cleaned_title[len(n):].strip()
+            updates["title"] = cleaned_title or None
+
+        # Fix title: strip "ExperienceEducation" suffix
+        t = updates.get("title", title)
+        if t and "ExperienceEducation" in t:
+            updates["title"] = re.sub(r'ExperienceEducation$', '', t).strip() or None
+
+        # Fix title: strip "Bio & More" suffix
+        t = updates.get("title", title)
+        if t and "Bio & More" in t:
+            updates["title"] = re.sub(r'Bio & More.*$', '', t).strip() or None
+
+        # Fix title: truncate bio paragraphs (keep first title-like phrase)
+        t = updates.get("title", title)
+        if t and len(t) > 100:
+            # Extract just the title part before bio text
+            m = re.match(r'^((?:Managing |General |Operating |Venture |Founding )?'
+                         r'(?:Partner|Director|Principal|Associate|VP|Founder|Co-Founder)'
+                         r'(?:[,\s]+\w+)*?)(?:[A-Z][a-z]+ (?:is |was |has |joined ))', t)
+            if m:
+                updates["title"] = m.group(1).strip()
+            else:
+                # Just take first sentence/clause
+                short = re.split(r'[.;]|\b(?:is a |was |has been |joined )', t)[0].strip()
+                if len(short) < len(t) and len(short) > 3:
+                    updates["title"] = short
+
+        # Recalculate normalized name if name changed
+        if "name" in updates:
+            updates["name_normalized"] = _normalize_name(updates["name"])
+
+        if updates:
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            conn.execute(
+                f"UPDATE investors SET {set_clause} WHERE id = ?",
+                list(updates.values()) + [r["id"]],
+            )
+            stats["fixed"] += 1
+
+    # 1. Delete obvious junk entries (nav text, section headings, non-person names)
+    _JUNK_INVESTOR_NAMES = re.compile(
+        r"^(What We Do|Our Values|Our Focus|How We Help|Our Startups|Our Blog|"
+        r"We Invest In|Our Network|Founder Catalyst|Startup Weekend|"
+        r"Meet Our |Our Model|Program Tracks|No Results|Privacy|"
+        r"Our Advisors|Our Culture|connect$|Info$|Industries$)",
+        re.I,
+    )
     junk_rows = conn.execute("SELECT id, name FROM investors").fetchall()
     junk_ids = []
     for r in junk_rows:
-        if _JUNK_INVESTOR_RE.search(r["name"] or ""):
+        name = r["name"] or ""
+        if _JUNK_INVESTOR_RE.search(name):
+            junk_ids.append(r["id"])
+        elif _JUNK_INVESTOR_NAMES.search(name):
             junk_ids.append(r["id"])
 
     if junk_ids:
