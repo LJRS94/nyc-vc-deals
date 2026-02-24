@@ -752,7 +752,30 @@ def _run_data_cleanup():
         conn.commit()
         logger.info(f"Cleanup: fixed {len(cik_deals)} CIK-tainted company names")
 
-    # 2. Remove non-corporation entities (LPs, LLCs = fund vehicles, not startups)
+    # 2. Remove deals with bad names (headline fragments that slipped through)
+    try:
+        from quality_control import _BAD_NAME_PATTERNS
+        from scrapers.llm_extract import validate_company_name
+        all_deals = conn.execute("SELECT id, company_name FROM deals").fetchall()
+        bad_deal_ids = []
+        for deal in all_deals:
+            name = deal["company_name"]
+            if not validate_company_name(name):
+                bad_deal_ids.append(deal["id"])
+            elif any(p.search(name) for p in _BAD_NAME_PATTERNS):
+                bad_deal_ids.append(deal["id"])
+        if bad_deal_ids:
+            ph = ",".join(["?"] * len(bad_deal_ids))
+            conn.execute(f"DELETE FROM deal_firms WHERE deal_id IN ({ph})", bad_deal_ids)
+            conn.execute(f"DELETE FROM deal_investors WHERE deal_id IN ({ph})", bad_deal_ids)
+            conn.execute(f"DELETE FROM deal_metadata WHERE deal_id IN ({ph})", bad_deal_ids)
+            conn.execute(f"DELETE FROM deals WHERE id IN ({ph})", bad_deal_ids)
+            conn.commit()
+            logger.info(f"Cleanup: removed {len(bad_deal_ids)} deals with bad names")
+    except Exception as e:
+        logger.warning(f"Bad deal cleanup warning: {e}")
+
+    # 3. Remove non-corporation entities (fund vehicles, not startups)
     fund_re = re.compile(
         r"\b(Fund|Feeder|Offshore|Holdings|Capital Partners|Capital,?\s*L\.?P|"
         r"Equity Fund|Investment Fund|Coinvestment|"
@@ -778,7 +801,7 @@ def _run_data_cleanup():
         conn.commit()
         logger.info(f"Cleanup: removed {removed} fund vehicle deals")
 
-    # 3. Run cross-source dedup (handles same-deal-different-stage duplicates)
+    # 4. Run cross-source dedup (handles same-deal-different-stage duplicates)
     try:
         from quality_control import merge_cross_source_duplicates
         merged = merge_cross_source_duplicates(conn)
@@ -787,7 +810,7 @@ def _run_data_cleanup():
     except Exception as e:
         logger.warning(f"Dedup cleanup warning: {e}")
 
-    # 4. Clean junk portfolio companies (delegated to unified QC)
+    # 5. Clean junk portfolio companies (delegated to unified QC)
     try:
         from quality_control import clean_portfolio_companies, clean_firms
         pc_removed = clean_portfolio_companies(conn)
@@ -796,7 +819,7 @@ def _run_data_cleanup():
     except Exception as e:
         logger.warning(f"Portfolio cleanup warning: {e}")
 
-    # 5. Clean duplicate/junk firms
+    # 6. Clean duplicate/junk firms
     try:
         firm_removed = clean_firms(conn)
         if firm_removed:
@@ -804,7 +827,7 @@ def _run_data_cleanup():
     except Exception as e:
         logger.warning(f"Firm cleanup warning: {e}")
 
-    # 6. Clean investor table (remove firm-name entries, junk like "<UNKNOWN>")
+    # 7. Clean investor table (remove firm-name entries, junk like "<UNKNOWN>")
     try:
         from quality_control import clean_investors
         inv_stats = clean_investors(conn)

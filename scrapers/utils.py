@@ -552,6 +552,22 @@ _FIRM_KEYWORDS = (
     "accelerator", "studio",
 )
 
+# Names that should never become firm records
+_JUNK_FIRM_RE = re.compile(
+    r"^\d+\s+investors?$"          # "50 investors", "1 investor"
+    r"|^multiple\s+investors"       # "Multiple investors (19 total)"
+    r"|^<UNKNOWN>"                  # placeholder
+    r"|^unknown$"
+    r"|^undisclosed"
+    r"|^growth\s+equity$"           # generic term, not a firm
+    r"|^private\s+equity$"
+    r"|^angel\s+investor"
+    r"|^various\b"
+    r"|^several\b"
+    r"|^n/?a$",
+    re.I,
+)
+
 
 def _is_firm_name(name: str) -> bool:
     """Return True if name looks like a VC firm, not an individual person."""
@@ -563,6 +579,20 @@ def _is_firm_name(name: str) -> bool:
     if not _INDIVIDUAL_RE.match(name) and not " " in name.strip():
         return True
     return False
+
+
+def _is_valid_firm_name(name: str) -> bool:
+    """Return True if name is a valid firm name (not junk/placeholder)."""
+    if not name or len(name.strip()) < 2:
+        return False
+    if _JUNK_FIRM_RE.search(name):
+        return False
+    # Compound names with "and" joining two firms — should be split, not created
+    if re.search(r'\band\b', name) and len(name.split(' and ')) == 2:
+        parts = name.split(' and ')
+        if all(len(p.strip()) > 3 for p in parts):
+            return False
+    return True
 
 
 def link_investors_to_deal(conn, deal_id: int, investors: List[Dict],
@@ -599,7 +629,9 @@ def link_investors_to_deal(conn, deal_id: int, investors: List[Dict],
             # Known firm — link as firm only, NOT as an investor record
             link_deal_firm_fn(conn, deal_id, firm_id, role)
         elif _is_firm_name(inv_name) and not _INDIVIDUAL_RE.match(inv_name):
-            # Looks like a firm name — create firm record + link, skip investor
+            # Looks like a firm name — validate before creating
+            if not _is_valid_firm_name(inv_name):
+                continue  # skip junk like "50 investors", "<UNKNOWN>"
             new_firm_id = upsert_firm_fn(conn, inv_name)
             link_deal_firm_fn(conn, deal_id, new_firm_id, role)
             all_firms.append({"id": new_firm_id, "name": inv_name})

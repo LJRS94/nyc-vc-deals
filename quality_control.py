@@ -134,10 +134,11 @@ def _extract_pattern(company_name: str, reason: str) -> Optional[str]:
 
 _BAD_NAME_PATTERNS = [
     re.compile(r"^(this|that|a|an|my|our|some)\s", re.I),
-    re.compile(r"\b(startup|company|firm|platform)\s*$", re.I),
+    re.compile(r"\b(startup|company|firm|platform|tool|app|service|solution|product|system)\s*$", re.I),
     re.compile(r"^(top|breaking|exclusive|report|update|exploring|roundup)", re.I),
     re.compile(r"\b(said|told|announced|reported|raised|raises)\b", re.I),
     re.compile(r"[?!:]"),  # headlines have punctuation
+    re.compile(r"[\u2019']s\s+(new|latest|next|first|big|recent)\b", re.I),  # possessive + adjective = headline
     re.compile(r"^\d+\s"),  # starts with number (street address or list)
     re.compile(r"^[\$']"),  # starts with $ or quote
 ]
@@ -1345,12 +1346,59 @@ def clean_portfolio_companies(conn) -> int:
 
 def clean_firms(conn) -> int:
     """
-    Merge duplicate firms and remove orphans.
+    Remove junk firms, merge duplicates, and clean orphans.
     Returns number of entries removed/merged.
     """
     removed = 0
 
-    # 1. Merge duplicate firms (same normalized name)
+    # ── 1. Delete junk firm names ──
+    _JUNK_FIRM_PATTERNS = [
+        r"^\d+\s+investors?$",          # "50 investors", "1 investor"
+        r"^Multiple investors",          # "Multiple investors (19 total)"
+        r"^<UNKNOWN>",                   # placeholder
+        r"^unknown$",
+        r"^undisclosed",
+        r"^Growth equity$",              # generic term
+        r"^Private equity$",
+        r"^Angel investor",
+        r"^Various\b",
+        r"^Several\b",
+        r"^n/?a$",
+    ]
+    junk_re = re.compile("|".join(_JUNK_FIRM_PATTERNS), re.I)
+
+    all_firms = conn.execute("SELECT id, name FROM firms").fetchall()
+    junk_ids = []
+    for f in all_firms:
+        name = f["name"] if isinstance(f, dict) else f[1]
+        fid = f["id"] if isinstance(f, dict) else f[0]
+        if junk_re.search(name):
+            junk_ids.append(fid)
+
+    if junk_ids:
+        ph = ",".join(["?"] * len(junk_ids))
+        # Re-link any deals to avoid orphaned references
+        conn.execute(f"DELETE FROM deal_firms WHERE firm_id IN ({ph})", junk_ids)
+        conn.execute(f"DELETE FROM portfolio_companies WHERE firm_id IN ({ph})", junk_ids)
+        conn.execute(f"DELETE FROM firms WHERE id IN ({ph})", junk_ids)
+        removed += len(junk_ids)
+        logger.info(f"Firm cleanup: removed {len(junk_ids)} junk firm entries")
+
+    # ── 2. Split compound firm names ("X and Y") into individual firms ──
+    compound_rows = conn.execute(
+        "SELECT id, name FROM firms WHERE name LIKE '% and %'"
+    ).fetchall()
+    for row in compound_rows:
+        fid = row["id"] if isinstance(row, dict) else row[0]
+        name = row["name"] if isinstance(row, dict) else row[1]
+        parts = name.split(" and ")
+        if len(parts) == 2 and all(len(p.strip()) > 3 for p in parts):
+            # Delete compound entry, deal_firms links go away with it
+            conn.execute("DELETE FROM deal_firms WHERE firm_id = ?", (fid,))
+            conn.execute("DELETE FROM firms WHERE id = ?", (fid,))
+            removed += 1
+
+    # ── 3. Merge duplicate firms (same normalized name) ──
     dupes = conn.execute("""
         SELECT REPLACE(REPLACE(REPLACE(LOWER(name), ' ', ''), '.', ''), ',', '') as norm,
                GROUP_CONCAT(id) as ids, COUNT(*) as cnt
@@ -1376,9 +1424,23 @@ def clean_firms(conn) -> int:
         conn.execute(f"DELETE FROM firms WHERE id IN ({ph})", loser_ids)
         removed += len(loser_ids)
 
+    # ── 4. Remove orphan firms (no deals AND no portfolio companies) ──
+    orphan_ids = conn.execute("""
+        SELECT f.id FROM firms f
+        LEFT JOIN deal_firms df ON f.id = df.firm_id
+        LEFT JOIN portfolio_companies pc ON f.id = pc.firm_id
+        WHERE df.firm_id IS NULL AND pc.firm_id IS NULL
+    """).fetchall()
+    if orphan_ids:
+        ids_list = [r[0] for r in orphan_ids]
+        ph = ",".join(["?"] * len(ids_list))
+        conn.execute(f"DELETE FROM firms WHERE id IN ({ph})", ids_list)
+        removed += len(ids_list)
+        logger.info(f"Firm cleanup: removed {len(ids_list)} orphan firms")
+
     if removed:
         conn.commit()
-        logger.info(f"Firm cleanup: merged {removed} duplicate firms")
+        logger.info(f"Firm cleanup: total removed/merged {removed} entries")
     return removed
 
 
