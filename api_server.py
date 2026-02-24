@@ -704,6 +704,17 @@ def trigger_scrape():
     return jsonify({"status": "started", "message": f"Scrape started (days_back={days_back})"})
 
 
+@app.route("/api/scrape/portfolio", methods=["POST"])
+@login_required
+@limiter.limit("2 per hour")
+def trigger_portfolio_scrape():
+    """Manually trigger portfolio + team scrape (requires login, rate limited)."""
+    if _scrape_status["running"]:
+        return jsonify({"status": "already_running", **_scrape_status}), 409
+    threading.Thread(target=_run_portfolio_scrape, daemon=True).start()
+    return jsonify({"status": "started", "message": "Portfolio + team scrape started"})
+
+
 @app.route("/api/scrape/status", methods=["GET"])
 def scrape_status():
     """Check the status of background scraping."""
