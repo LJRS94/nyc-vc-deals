@@ -401,6 +401,129 @@ def seed_firms():
     logger.info(f"Seeded {total} NYC VC firms ({len(NYC_VC_FIRMS)} built-in + {len(extra)} from firms.json)")
 
 
+_JUNK_PORTFOLIO_RE = re.compile(
+    r"^(GET IN TOUCH|Go-To-Market|View All|Load More|Show More|"
+    r"Learn More|Read More|Visit Website|Visit Site|Back to Top|Contact Us|"
+    r"About Us|About|Our Team|Our Portfolio|Our Startups|Our Mission|See All|See More|Subscribe|"
+    r"Sign Up|Log In|Login|Sign In|Privacy Policy|Privacy|Privacy Center|"
+    r"Terms of Service|Cookie Policy|Cookie Settings|"
+    r"Filter|Sort|Search|Menu|Close|Open|All Companies|All|"
+    r"Current Portfolio|Previous Portfolio|Active|Exited|"
+    r"Limited Partner Login|Investor Portal|LP Portal|LP Log-In|"
+    r"For Investors|For Founders|For LPs|For LP's|How We Invest|"
+    r"Series [a-e]|Series [A-E]|Pre-Seed|Seed|IPO|"
+    r"Gaming|Health|Health Tech|Consumer|Finance|Media|Software|Education|"
+    r"Marketplace|Other|Resources|News|Blog|Press|Insights|"
+    r"Team|Studio|LinkedIn|Twitter|Facebook|Instagram|Podcast|"
+    r"FAQs?|Reset|Apply|Cancel|Submit|Back|Next|Previous|More|Less|"
+    r"Fundraising|Founder Services|Investments|Partners|Network|"
+    r"Careers|Events|Overview|Contact|Home|Stage|Spotlight|"
+    r"Trending topics|Disclosures|Featured|Enterprise|Commerce|"
+    r"Crypto|Robotics|Space|Hardware|Fintech|Cybersecurity|"
+    r"AI Apps|AI Infrastructure & Developer Platforms|"
+    r"Data, AI & Machine Learning|Energy & Infrastructure|"
+    r"Enterprise Apps & Vertical AI|Infrastructure & Developer Tools|"
+    r"Loading\.\.\.)$",
+    re.I,
+)
+
+# Patterns that indicate metadata/junk anywhere in the string
+_JUNK_ANYWHERE_RE = re.compile(
+    r"(Founder\(s\)|Partner Since|Year of Investment|Investment Status|"
+    r"Entry Stage|Country:|Industry:|Sector:|DISCLAIMER|Portfolio Highlights)",
+    re.I,
+)
+
+_JUNK_CONTENT_RE = re.compile(
+    r"(Published on|Exits?(true|false)$|Stage RTP|SectorFintech|"
+    r"SectorAI|SectorSaaS|SectorE-commerce|SectorAgriculture|CustomerB2[BC]|"
+    r"New York, NY.*Enterprise|Tel Aviv.*Enterprise|"
+    r"San Francisco, CA.*Enterprise|"
+    r"Status:?(Current|Exited|Active)|"
+    r"AllMedia$|AllCommerce$|AllSaaS$|AllFinTech$|AllHealthcare$|"
+    r"AllEducation$|AllHR$|AllPropTech$|AllSocial$|AllCrypto$|"
+    r"CommerceAll$|FinTechAll$|HealthcareAll$|EducationAll$|SaaSAll$|"
+    r"Link opens in new tab|"
+    r"ENTERPRISE WEEKLY NEWSLETTER|BROWSE OUR|PLAY VIDEO|"
+    r"VIEW LEGAL|NVP PROMISE|COMPANY↑|"
+    r"Initial investment:|Entry Year:|Entry Stage:|Country:|"
+    r"Marketplace:All)",
+    re.I,
+)
+
+
+def _is_valid_portfolio_name(name: str) -> bool:
+    """Return True if name looks like a real company name, not UI junk."""
+    if not name or len(name.strip()) < 2:
+        return False
+    name = name.strip()
+    # Too long for a company name
+    if len(name) > 60:
+        return False
+    # Year-only
+    if re.match(r"^\d{4}$", name):
+        return False
+    # Pure number
+    if re.match(r"^\d+$", name):
+        return False
+    # Nav/UI junk (exact match)
+    if _JUNK_PORTFOLIO_RE.match(name):
+        return False
+    # Metadata anywhere in string
+    if _JUNK_ANYWHERE_RE.search(name):
+        return False
+    # Metadata/description junk
+    if _JUNK_CONTENT_RE.search(name):
+        return False
+    # Contains sentence-like patterns (descriptions scraped as names)
+    if len(name) > 40 and any(w in name.lower() for w in
+            [" is a ", " is an ", " provides ", " delivers ", " develops ",
+             " offers ", " enables ", " builds ", " allows ", " revolutionizes ",
+             " partnering ", " dedicated to ", " bringing ", " powered by "]):
+        return False
+    # Starts with description-like phrases
+    if re.match(r"^(AI-powered|An? investment|A specialty|An? AI|A platform|The leading|An? \w+ that)", name, re.I):
+        return False
+    # Concatenated metadata (e.g. "CONSUMERMedia2017", "RRE Invested2025")
+    if re.search(r"(Consumer|Media|Health|Finance|Software|Education|Marketplace)\d{4}$", name):
+        return False
+    if re.search(r"Invested\d{4}$", name):
+        return False
+    # Category-only concatenations (e.g. "AICONSUMER", "CryptoFintech2018", "HealthcareFintech")
+    _cats = {'AI', 'CONSUMER', 'Consumer', 'Fintech', 'Healthcare', 'Enterprise',
+             'Saas', 'SaaS', 'Hardware', 'Robotics', 'Space', 'Media', 'Commerce',
+             'Brands', 'Strategy', 'Featured', 'PropTech', 'Social', 'Crypto',
+             'Climate', 'Security', 'Infrastructure', 'Logistics', 'Gaming', 'Education'}
+    base = re.sub(r'\d{4}$', '', name).strip()
+    remaining = base
+    for cat in sorted(_cats, key=len, reverse=True):
+        remaining = remaining.replace(cat, '')
+    if len(remaining.replace('/', '').replace(' ', '').replace('&', '')) == 0 and len(base) > 3:
+        return False
+    # "AI" + year (e.g. "AI2024")
+    if re.match(r'^AI\d{4}$', name):
+        return False
+    # Parenthetical UI junk
+    if re.match(r"^\(", name):
+        return False
+    # "Acq:" prefix (acquisition tags like "SpotlightAcq: Enverus")
+    if "Acq:" in name:
+        return False
+    # Stock ticker entries (e.g. "NASDAQ: CHYM", "NYSE: WEAV")
+    if re.match(r'^(NASDAQ|NYSE)', name):
+        return False
+    # "Powered by X", "Design by X" — attribution, not portfolio
+    if re.match(r'^(Design|Built|Made|Powered|Created) by ', name, re.I):
+        return False
+    # City + category concatenations
+    if re.match(r'^(Austin|Boston|London|New York|San Francisco|Tel Aviv|Toronto|Washington)', name) and (',' in name or len(name) > 20):
+        return False
+    # Filter state concatenations (e.g. "FilterConsumerConsumerAI...")
+    if re.match(r'^Filter', name) and len(name) > 10:
+        return False
+    return True
+
+
 def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
     """
     Portfolio page scraper using site-specific extraction patterns
@@ -428,9 +551,8 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
                     text = link.get_text(strip=True)
                     if (
                         href.startswith("http")
-                        and text
+                        and _is_valid_portfolio_name(text)
                         and "usv.com" not in href
-                        and "Read" not in text
                         and text not in seen
                     ):
                         seen.add(text)
@@ -453,8 +575,9 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
                 # Company name is in first text node of container
                 name_el = container.find(["h2", "h3", "h4", "p", "span", "div"])
                 name = name_el.get_text(strip=True) if name_el else ""
-                # Skip filter UI and generic labels
-                if not name or name.lower() in ("yearfilter", "filter", "all", "active"):
+                if not _is_valid_portfolio_name(name):
+                    continue
+                if name.lower() in ("yearfilter", "filter", "all"):
                     continue
                 # Extract website from "Visit Website" link
                 link_el = card.select_one('a[href^="http"]')
@@ -486,7 +609,7 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
                 if not title_el:
                     continue
                 name = title_el.get_text(strip=True)
-                if not name:
+                if not _is_valid_portfolio_name(name):
                     continue
                 desc_el = wrap.select_one("div.short-desc") or wrap.select_one("div.text-14px")
                 desc = desc_el.get_text(strip=True)[:200] if desc_el else None
@@ -520,10 +643,7 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
                 if not name_el:
                     name_el = card.find("a")
                 name = name_el.get_text(strip=True) if name_el else None
-                if not name or len(name) < 2 or len(name) > 80:
-                    continue
-                # Skip nav-like text
-                if name.lower() in ("portfolio", "home", "about", "team", "contact", "read more", "read more."):
+                if not _is_valid_portfolio_name(name):
                     continue
                 link_el = card.find("a", href=True)
                 href = link_el["href"] if link_el else None
@@ -543,14 +663,6 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
 
         # Pattern 5: External links with company-like names (generic fallback)
         # Collect all external links that look like company websites
-        _NAV_WORDS = {
-            "portfolio", "home", "about", "team", "contact", "blog", "news",
-            "press", "careers", "jobs", "insights", "updates", "people",
-            "read more", "read more.", "read the post", "read", "visit website",
-            "learn more", "view all", "load more", "show more", "back to top",
-            "privacy", "terms", "cookie", "subscribe", "sign up", "log in",
-            "filter", "sort", "search", "menu", "close", "open",
-        }
         domain = portfolio_url.split("/")[2]
         seen = set()
         for link in soup.find_all("a", href=True):
@@ -560,13 +672,17 @@ def scrape_firm_portfolio(firm_name: str, portfolio_url: str) -> List[Dict]:
                 text
                 and href.startswith("http")
                 and domain not in href
-                and len(text) > 2 and len(text) < 60
-                and text.lower() not in _NAV_WORDS
+                and _is_valid_portfolio_name(text)
                 and not text.startswith("#")
-                and not re.search(r"^\d+$", text)
                 and text not in seen
                 # Name should look like a company (starts with uppercase or has multiple words)
                 and (text[0].isupper() or " " in text)
+                # Reject social media / generic platform links
+                and not any(s in href for s in [
+                    "twitter.com", "linkedin.com", "facebook.com", "instagram.com",
+                    "youtube.com", "github.com", "medium.com", "crunchbase.com",
+                    "google.com", "apple.com/app", "play.google.com",
+                ])
             ):
                 seen.add(text)
                 results.append({
