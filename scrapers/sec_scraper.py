@@ -175,7 +175,15 @@ def _should_keep_sec_filing(company_name: str, details: Optional[Dict], conn) ->
         logger.debug(f"Skipping junk name: {company_name}")
         return False
 
-    # 2. Industry group filter (from Form D XML)
+    # 2. Entity type filter — only keep corporations (C-corps / S-corps)
+    #    Funds file as Limited Partnership, LLC, etc. — not startups.
+    if details:
+        entity_type = (details.get("entity_type") or "").strip()
+        if entity_type and "corporation" not in entity_type.lower():
+            logger.debug(f"Skipping non-corp entity type '{entity_type}': {company_name}")
+            return False
+
+    # 3. Industry group filter (from Form D XML)
     if details:
         industry = (details.get("industry") or "").lower().strip()
         if industry in _JUNK_INDUSTRY_GROUPS:
@@ -454,6 +462,7 @@ def fetch_form_d_details(cik: str = None, accession: str = None) -> Optional[Dic
             "zip": find_any("zipCode", "issuerZipCode"),
             "street": find_any("street1", "issuerStreet1"),
             "industry": find_any("industryGroupType", "IndustryGroupType"),
+            "entity_type": find_any("entityType", "EntityType"),
             "amount_sold": None,
             "total_offering": None,
             "investors_count": find_any("totalNumberAlreadyInvested", "numberInvested"),

@@ -37,6 +37,39 @@ from quality_control import validate_deal
 
 logger = logging.getLogger(__name__)
 
+# CIK suffix appended by EDGAR (e.g. "Acme Inc (CIK 0002012881)")
+_CIK_SUFFIX_RE = re.compile(r"\s*\(CIK\s*\d+\)\s*$", re.I)
+
+# Fund vehicles and non-startup entities to filter out of DE filings
+_DE_ENTITY_BLOCKLIST = re.compile(
+    r"\b(Fund|Feeder|Offshore|Holdings|Capital Partners|Capital,?\s*L\.?P|"
+    r"Equity Fund|Investment Fund|Coinvestment|"
+    r"Aggregator|Master Portfolio|"
+    r"Asset Backed|BDC|Ventures?\s+[IVXLC]+\b|"
+    r"DST\b|REIT|Trust\b|"
+    r"Investors?\b|Partners,?\s*L\.?P|Deep Value|"
+    r"Bioventures|Private Equity|Public Markets|Selector)\b",
+    re.I,
+)
+
+
+def _clean_de_entity_name(name: str) -> str:
+    """Strip CIK suffix, legal suffixes, and extra whitespace."""
+    if not name:
+        return name
+    # Remove CIK suffix
+    name = _CIK_SUFFIX_RE.sub("", name).strip()
+    # Remove trailing legal suffixes (keep as company_name without Inc/LLC noise)
+    name = re.sub(r",?\s*(Inc\.?|LLC|L\.?P\.?|Corp\.?|Ltd\.?)$", "", name, flags=re.I).strip()
+    return name
+
+
+def _is_de_junk_entity(name: str) -> bool:
+    """Return True if the entity looks like a fund vehicle, not a startup."""
+    if not name:
+        return True
+    return bool(_DE_ENTITY_BLOCKLIST.search(name))
+
 
 def _detect_category(text: str) -> str:
     """Wrapper around classify_sector matching old news_scraper.detect_category."""
@@ -267,8 +300,11 @@ def search_sec_de_incorporated(days_back: int = 14) -> List[Dict]:
                 for hit in data.get("hits", {}).get("hits", []):
                     src = hit.get("_source", {})
                     display_names = src.get("display_names", [])
-                    name = display_names[0] if display_names else "Unknown"
-                    if name in existing_names or name == "Unknown":
+                    raw_name = display_names[0] if display_names else "Unknown"
+                    name = _clean_de_entity_name(raw_name)
+                    if not name or name in existing_names or name == "Unknown":
+                        continue
+                    if _is_de_junk_entity(raw_name):
                         continue
                     existing_names.add(name)
 
@@ -693,6 +729,12 @@ def run_delaware_scraper(days_back: int = 90):
                 state_biz = form_d_details.get("state_of_business", "")
                 # Check if the business state matches any enabled city
                 expected_city = filing.get("expected_city")
+                # Filter non-corporation entities (funds are LPs/LLCs, not C-corps)
+                entity_type = form_d_details.get("entity_type", "")
+                if entity_type and "corporation" not in entity_type.lower():
+                    logger.debug(f"Skipping non-corp entity '{entity_type}': {company_name}")
+                    continue
+
                 is_de = (
                     state_inc == "DE"
                     or state_inc.upper() == "DELAWARE"
