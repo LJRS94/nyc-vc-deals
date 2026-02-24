@@ -331,21 +331,43 @@ def validate_deal_amount(amount: Optional[float], stage: str = "Unknown") -> boo
 STAGE_ORDER = {"Pre-Seed": 0, "Seed": 1, "Series A": 2, "Series B": 3, "Series C+": 4, "Unknown": -1}
 
 
+def _dates_close(date_a: Optional[str], date_b: Optional[str],
+                  max_gap: int = DEDUP_DATE_GAP_DAYS) -> Optional[bool]:
+    """Return True if dates are within max_gap days, False if farther apart,
+    None if either date is missing or unparseable."""
+    if not date_a or not date_b:
+        return None
+    try:
+        d1 = datetime.strptime(date_a, "%Y-%m-%d")
+        d2 = datetime.strptime(date_b, "%Y-%m-%d")
+        return abs((d1 - d2).days) <= max_gap
+    except (ValueError, TypeError):
+        return None
+
+
+def _amounts_similar(amt_a: Optional[float], amt_b: Optional[float],
+                     ratio_threshold: float = DEDUP_AMOUNT_RATIO) -> Optional[bool]:
+    """Return True if amounts are within ratio_threshold of each other,
+    False if they differ significantly, None if either is missing."""
+    if not amt_a or not amt_b:
+        return None
+    ratio = max(amt_a, amt_b) / max(min(amt_a, amt_b), 1)
+    return ratio <= ratio_threshold
+
+
 def is_duplicate_deal(conn, company_name: str, stage: str,
                       amount: Optional[float] = None,
                       date_announced: Optional[str] = None) -> bool:
     """
     Smart dedup: returns True if this deal is a duplicate of an existing one.
-    Keeps legitimate multi-round deals (different stage or >6 months apart).
-    Uses both exact normalized match and fuzzy match for names like
-    "Ramp" vs "Ramp Financial".
+    Keeps legitimate multi-round deals while catching duplicates that have
+    different stage labels (common when multiple sources classify differently).
 
     Rules:
-    - Same company + same stage + same date → duplicate
-    - Same company + same stage + dates <6 months apart → duplicate
-    - Same company + same stage + dates >6 months apart → NEW round (keep)
-    - Same company + different stage → NEW round (keep)
-    - Same company + same stage + no dates → duplicate (can't distinguish)
+    - Same company + same amount + close dates → duplicate (regardless of stage)
+    - Same company + same stage + close dates → duplicate
+    - Same company + different stage + different amount + far dates → NEW round
+    - Same company + no distinguishing signals → duplicate (can't differentiate)
     """
     norm = normalize_company_name(company_name)
     if not norm:
@@ -360,13 +382,11 @@ def is_duplicate_deal(conn, company_name: str, stage: str,
 
     # Fuzzy match: find deals where the normalized name contains or is contained by ours
     if not existing and len(norm) >= 4:
-        # Use LIKE for substring containment (covers "ramp" in "rampfinancial")
         fuzzy_rows = conn.execute(
             "SELECT id, stage, amount_usd, date_announced, company_name_normalized FROM deals "
             "WHERE company_name_normalized LIKE ? OR ? LIKE '%' || company_name_normalized || '%'",
             (f"%{norm}%", norm)
         ).fetchall()
-        # Filter to only keep genuine fuzzy matches (length ratio >= threshold)
         for row in fuzzy_rows:
             if company_names_match(company_name, row["company_name_normalized"]):
                 existing.append(row)
@@ -379,30 +399,39 @@ def is_duplicate_deal(conn, company_name: str, stage: str,
         ex_amount = row["amount_usd"]
         ex_date = row["date_announced"]
 
-        # Different stage → always a new round (unless stage is Unknown)
-        if stage != "Unknown" and ex_stage != "Unknown" and stage != ex_stage:
-            continue  # check other existing deals
+        dates_close = _dates_close(date_announced, ex_date)
+        amounts_sim = _amounts_similar(amount, ex_amount)
 
-        # Same stage (or one is Unknown) — check dates
-        if date_announced and ex_date:
-            try:
-                d1 = datetime.strptime(date_announced, "%Y-%m-%d")
-                d2 = datetime.strptime(ex_date, "%Y-%m-%d")
-                gap_days = abs((d1 - d2).days)
-                if gap_days > DEDUP_DATE_GAP_DAYS:  # >6 months apart → likely new round
-                    continue
-            except (ValueError, TypeError):
-                pass  # can't parse dates, fall through to duplicate
+        # ── Strong duplicate signal: same amount + close dates ──
+        # Regardless of stage label, if the amount and date match,
+        # it's the same deal reported with a different stage classification.
+        if amounts_sim is True and dates_close is True:
+            return True
 
-        # Same stage + close dates (or no dates) → check amounts
-        if amount and ex_amount:
-            # Significantly different amounts → likely different round
-            ratio = max(amount, ex_amount) / max(min(amount, ex_amount), 1)
-            if ratio > DEDUP_AMOUNT_RATIO:  # more than 2x difference
+        # ── Same amount + no date info → likely same deal ──
+        if amounts_sim is True and dates_close is None:
+            return True
+
+        # ── Close dates + no amount info → likely same deal ──
+        if dates_close is True and amounts_sim is None:
+            # But only if stages are compatible (same, or one is Unknown)
+            if stage == ex_stage or stage == "Unknown" or ex_stage == "Unknown":
+                return True
+
+        # ── Same stage explicitly ──
+        if stage == ex_stage or stage == "Unknown" or ex_stage == "Unknown":
+            # Far apart dates → new round
+            if dates_close is False:
                 continue
+            # Significantly different amounts → different round
+            if amounts_sim is False:
+                continue
+            # Same stage + close/unknown dates + similar/unknown amounts → duplicate
+            return True
 
-        # All checks passed → this is a duplicate
-        return True
+        # ── Different stages, no amount/date overlap → new round ──
+        # Truly different stages with no contradicting signals — keep both
+        continue
 
     return False
 
@@ -469,7 +498,7 @@ def parse_pub_date(date_str: str) -> Optional[str]:
     return None
 
 
-# ── NYC detection (shared by news_scraper, delaware_scraper) ────────
+# ── City detection (shared by news_scraper, delaware_scraper) ────────
 
 NYC_INDICATORS = [
     "new york", "nyc", "manhattan", "brooklyn", "queens",
@@ -480,8 +509,33 @@ NYC_INDICATORS = [
 ]
 
 
+def detect_city(text: str) -> Optional[str]:
+    """Return the first matching city display name, or None.
+
+    Checks all enabled cities from CITY_REGISTRY. First match wins.
+    """
+    from config import CITY_REGISTRY, ENABLED_CITIES
+    text_lower = text.lower()
+    for city_name in ENABLED_CITIES:
+        cfg = CITY_REGISTRY.get(city_name)
+        if not cfg:
+            continue
+        if any(ind in text_lower for ind in cfg["indicators"]):
+            return city_name
+    return None
+
+
+def is_city_related(text: str, city_name: str) -> bool:
+    """Return True if text contains indicators for the given city."""
+    from config import CITY_REGISTRY
+    cfg = CITY_REGISTRY.get(city_name, {})
+    indicators = cfg.get("indicators", [])
+    text_lower = text.lower()
+    return any(ind in text_lower for ind in indicators)
+
+
 def is_nyc_related(text: str) -> bool:
-    """Return True if text contains NYC location indicators."""
+    """Return True if text contains NYC location indicators (backward compat)."""
     text_lower = text.lower()
     return any(indicator in text_lower for indicator in NYC_INDICATORS)
 

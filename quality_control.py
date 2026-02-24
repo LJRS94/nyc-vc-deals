@@ -133,6 +133,7 @@ def validate_deal(conn, company_name: str, stage: str = "Unknown",
                   amount: float = None, date_announced: str = None,
                   source_type: str = "other", description: str = None,
                   is_nyc: bool = None, raw_text: str = None,
+                  city: str = None,
                   **kwargs) -> Tuple[bool, str, Dict]:
     """
     THE single quality gate. ALL ingestion paths must call this.
@@ -243,6 +244,11 @@ def validate_deal(conn, company_name: str, stage: str = "Unknown",
     )
 
     # ── 8. Build cleaned data ──
+    # Resolve city: explicit param > fallback from is_nyc flag
+    resolved_city = city
+    if not resolved_city and is_nyc:
+        resolved_city = "New York"
+
     cleaned = {
         "company_name": company_name,
         "company_name_normalized": normalize_company_name(company_name),
@@ -253,6 +259,8 @@ def validate_deal(conn, company_name: str, stage: str = "Unknown",
         "source_type": source_type,
         "confidence_score": confidence,
     }
+    if resolved_city:
+        cleaned["city"] = resolved_city
     # Pass through optional fields
     if description:
         cleaned["company_description"] = description
@@ -444,88 +452,145 @@ def get_rejection_summary(conn, days: int = 30) -> Dict:
 
 def merge_cross_source_duplicates(conn) -> int:
     """
-    Post-scrape pass: find deals with the same normalized company name,
-    same stage, and close dates across different sources. Keep the
-    highest-confidence record and merge investor/firm links from the others.
+    Post-scrape dedup pass: find deals with the same normalized company name
+    that are likely the same funding round. Works across sources AND within
+    the same source. Handles the common case where the same deal gets
+    different stage labels from different scrapers.
+
+    Grouping: by company_name_normalized (ignoring stage).
+    Within each group, cluster deals that look like the same round based on
+    amount similarity and date proximity. Delete duplicates within each cluster.
+
     Returns number of duplicates removed.
     """
-    # Find groups of likely duplicates (same company + stage, close dates)
+    from scrapers.utils import _dates_close, _amounts_similar
+
+    # Get all companies with multiple deals
     groups = conn.execute("""
-        SELECT company_name_normalized,
-               GROUP_CONCAT(id) as ids,
-               GROUP_CONCAT(source_type) as sources,
-               GROUP_CONCAT(confidence_score) as confidences,
-               GROUP_CONCAT(COALESCE(amount_usd, 0)) as amounts,
-               COUNT(*) as cnt
+        SELECT company_name_normalized, COUNT(*) as cnt
         FROM deals
         WHERE company_name_normalized IS NOT NULL
-        GROUP BY company_name_normalized, stage
+          AND company_name_normalized != ''
+        GROUP BY company_name_normalized
         HAVING COUNT(*) > 1
-          AND COUNT(DISTINCT source_type) > 1
     """).fetchall()
 
     merged = 0
     for g in groups:
-        ids = [int(x) for x in g["ids"].split(",")]
-        confidences = [float(x) for x in g["confidences"].split(",")]
-        amounts = [float(x) for x in g["amounts"].split(",")]
-
-        # Check dates are close (within 180 days) — skip if not
-        dates = conn.execute(
-            f"SELECT id, date_announced FROM deals WHERE id IN ({','.join(['?']*len(ids))})",
-            ids,
+        norm = g["company_name_normalized"]
+        deals = conn.execute(
+            "SELECT id, stage, amount_usd, date_announced, source_type, "
+            "confidence_score, company_website, company_description, city "
+            "FROM deals WHERE company_name_normalized = ? ORDER BY id",
+            (norm,)
         ).fetchall()
-        date_vals = [d["date_announced"] for d in dates if d["date_announced"]]
-        if len(date_vals) >= 2:
-            from datetime import datetime as dt
-            try:
-                parsed = sorted(dt.strptime(d, "%Y-%m-%d") for d in date_vals)
-                if (parsed[-1] - parsed[0]).days > DEDUP_DATE_GAP_DAYS:
-                    continue  # too far apart — likely different rounds
-            except (ValueError, TypeError):
-                continue  # unparseable dates — skip merge to be safe
+        deals = [dict(d) for d in deals]
 
-        # Pick the keeper: highest confidence, then largest amount
-        best_idx = 0
-        for i in range(1, len(ids)):
-            if (confidences[i] > confidences[best_idx] or
-                (confidences[i] == confidences[best_idx] and amounts[i] > amounts[best_idx])):
-                best_idx = i
+        # Cluster deals into rounds: two deals are in the same cluster if
+        # they have similar amounts AND close dates (or missing data makes
+        # it ambiguous). Different amounts + far dates = different rounds.
+        clusters = []  # list of lists of deal dicts
+        for deal in deals:
+            placed = False
+            for cluster in clusters:
+                rep = cluster[0]  # representative deal for cluster
+                dc = _dates_close(deal["date_announced"], rep["date_announced"])
+                ams = _amounts_similar(deal["amount_usd"], rep["amount_usd"])
 
-        keeper_id = ids[best_idx]
-        loser_ids = [x for x in ids if x != keeper_id]
-        ph = ",".join(["?"] * len(loser_ids))
-
-        # Merge: re-point investor/firm links from losers to keeper
-        conn.execute(
-            f"UPDATE OR IGNORE deal_firms SET deal_id = ? WHERE deal_id IN ({ph})",
-            [keeper_id] + loser_ids,
-        )
-        conn.execute(
-            f"UPDATE OR IGNORE deal_investors SET deal_id = ? WHERE deal_id IN ({ph})",
-            [keeper_id] + loser_ids,
-        )
-
-        # If keeper has no amount but a loser does, update it
-        keeper_amt = amounts[best_idx]
-        if not keeper_amt:
-            for i, aid in enumerate(ids):
-                if amounts[i] and aid != keeper_id:
-                    conn.execute(
-                        "UPDATE deals SET amount_usd = ?, amount_disclosed = 1 WHERE id = ?",
-                        (amounts[i], keeper_id),
-                    )
+                # Same amount + close dates → same round
+                if ams is True and dc is not False:
+                    cluster.append(deal)
+                    placed = True
                     break
+                # Close dates + no amount data → same round (if no contradicting signal)
+                if dc is True and ams is None:
+                    cluster.append(deal)
+                    placed = True
+                    break
+                # Same amount + no date data → same round
+                if ams is True and dc is None:
+                    cluster.append(deal)
+                    placed = True
+                    break
+                # Both have no amount AND close/no dates → assume duplicate
+                if ams is None and (dc is True or dc is None):
+                    # Only merge if stages are compatible
+                    stages = {deal["stage"], rep["stage"]}
+                    if len(stages - {"Unknown"}) <= 1:
+                        cluster.append(deal)
+                        placed = True
+                        break
 
-        # Clean up orphaned links then delete losers
-        conn.execute(f"DELETE FROM deal_firms WHERE deal_id IN ({ph})", loser_ids)
-        conn.execute(f"DELETE FROM deal_investors WHERE deal_id IN ({ph})", loser_ids)
-        conn.execute(f"DELETE FROM deals WHERE id IN ({ph})", loser_ids)
-        merged += len(loser_ids)
+            if not placed:
+                clusters.append([deal])
+
+        # For each cluster with >1 deal, merge into the best one
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue
+
+            # Pick keeper: highest confidence → largest amount → has website → has description
+            def score(d):
+                return (
+                    d["confidence_score"] or 0,
+                    d["amount_usd"] or 0,
+                    1 if d.get("company_website") else 0,
+                    1 if d.get("company_description") else 0,
+                )
+            cluster.sort(key=score, reverse=True)
+            keeper = cluster[0]
+            losers = cluster[1:]
+
+            keeper_id = keeper["id"]
+            loser_ids = [d["id"] for d in losers]
+            ph = ",".join(["?"] * len(loser_ids))
+
+            # Merge investor/firm links from losers to keeper
+            conn.execute(
+                f"UPDATE OR IGNORE deal_firms SET deal_id = ? WHERE deal_id IN ({ph})",
+                [keeper_id] + loser_ids,
+            )
+            conn.execute(
+                f"UPDATE OR IGNORE deal_investors SET deal_id = ? WHERE deal_id IN ({ph})",
+                [keeper_id] + loser_ids,
+            )
+
+            # Fill gaps in keeper from losers
+            if not keeper["amount_usd"]:
+                for loser in losers:
+                    if loser["amount_usd"]:
+                        conn.execute(
+                            "UPDATE deals SET amount_usd = ?, amount_disclosed = 1 WHERE id = ?",
+                            (loser["amount_usd"], keeper_id),
+                        )
+                        break
+            if not keeper.get("company_website"):
+                for loser in losers:
+                    if loser.get("company_website"):
+                        conn.execute(
+                            "UPDATE deals SET company_website = ? WHERE id = ?",
+                            (loser["company_website"], keeper_id),
+                        )
+                        break
+            if not keeper.get("company_description"):
+                for loser in losers:
+                    if loser.get("company_description"):
+                        conn.execute(
+                            "UPDATE deals SET company_description = ? WHERE id = ?",
+                            (loser["company_description"], keeper_id),
+                        )
+                        break
+
+            # Clean up orphaned links then delete losers
+            conn.execute(f"DELETE FROM deal_firms WHERE deal_id IN ({ph})", loser_ids)
+            conn.execute(f"DELETE FROM deal_investors WHERE deal_id IN ({ph})", loser_ids)
+            conn.execute(f"DELETE FROM deal_metadata WHERE deal_id IN ({ph})", loser_ids)
+            conn.execute(f"DELETE FROM deals WHERE id IN ({ph})", loser_ids)
+            merged += len(loser_ids)
 
     if merged:
         conn.commit()
-        logger.info(f"Cross-source dedup: merged {merged} duplicate deals")
+        logger.info(f"Dedup pass: merged {merged} duplicate deals")
     return merged
 
 
