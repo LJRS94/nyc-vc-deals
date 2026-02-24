@@ -26,6 +26,7 @@ def get_deal_feed():
     source = request.args.get("source")
     min_amount = request.args.get("min_amount", type=float)
     stage = request.args.get("stage")
+    city = request.args.get("city")
 
     where = ["(d.date_announced >= date('now', ?) OR d.date_announced IS NULL)"]
     params = [f"-{days} days"]
@@ -39,6 +40,9 @@ def get_deal_feed():
     if stage:
         where.append("d.stage = ?")
         params.append(stage)
+    if city:
+        where.append("d.city = ?")
+        params.append(city)
 
     where_sql = " AND ".join(where)
 
@@ -46,7 +50,7 @@ def get_deal_feed():
         SELECT
             d.id, d.company_name, d.company_description, d.company_website, d.stage,
             d.amount_usd, d.amount_disclosed, d.date_announced,
-            d.source_type, d.source_url, d.confidence_score, d.raw_text,
+            d.source_type, d.source_url, d.confidence_score, d.raw_text, d.city,
             c.name as category,
             GROUP_CONCAT(DISTINCT f.name) as firms,
             GROUP_CONCAT(DISTINCT
@@ -113,6 +117,7 @@ def get_deal_feed():
             "source_url": r["source_url"],
             "confidence_score": r["confidence_score"],
             "category": r["category"],
+            "city": r["city"],
             "firms": [x for x in (r["firms"] or "").split(",") if x],
             "lead_firms": [x for x in (r["lead_firms"] or "").split(",") if x],
             "investors": investors_by_deal.get(r["id"], []),

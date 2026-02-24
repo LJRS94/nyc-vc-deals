@@ -23,20 +23,27 @@ def _safe_int(value, default, lo=1, hi=10000):
 def get_stats():
     """Dashboard overview stats — single combined query."""
     conn = g.db
-    row = conn.execute("""
+    city = request.args.get("city")
+    cf = "WHERE city = ?" if city else ""
+    cf_and = "AND city = ?" if city else ""
+    cp = [city] if city else []
+
+    row = conn.execute(f"""
         SELECT
-            (SELECT COUNT(*) FROM deals) as total_deals,
+            (SELECT COUNT(*) FROM deals {cf}) as total_deals,
             (SELECT COUNT(*) FROM firms) as total_firms,
             (SELECT COUNT(*) FROM investors) as total_investors,
-            (SELECT COALESCE(SUM(amount_usd), 0) FROM deals WHERE amount_usd IS NOT NULL) as total_capital,
-            (SELECT COALESCE(AVG(amount_usd), 0) FROM deals WHERE amount_usd IS NOT NULL) as avg_deal_size,
-            (SELECT COUNT(*) FROM deals WHERE source_type = 'de_filing'
-             OR raw_text LIKE '%DE incorporated%' OR raw_text LIKE '%Delaware%') as de_incorporated_count,
-            (SELECT MAX(COALESCE(date_announced, created_at)) FROM deals) as last_updated
-    """).fetchone()
-    source_rows = conn.execute(
-        "SELECT source_type, COUNT(*) as cnt FROM deals GROUP BY source_type"
-    ).fetchall()
+            (SELECT COALESCE(SUM(amount_usd), 0) FROM deals WHERE amount_usd IS NOT NULL {cf_and}) as total_capital,
+            (SELECT COALESCE(AVG(amount_usd), 0) FROM deals WHERE amount_usd IS NOT NULL {cf_and}) as avg_deal_size,
+            (SELECT COUNT(*) FROM deals WHERE (source_type = 'de_filing'
+             OR raw_text LIKE '%DE incorporated%' OR raw_text LIKE '%Delaware%') {cf_and}) as de_incorporated_count,
+            (SELECT MAX(COALESCE(date_announced, created_at)) FROM deals {cf}) as last_updated
+    """, cp * 5 if city else []).fetchone()
+    source_sql = "SELECT source_type, COUNT(*) as cnt FROM deals"
+    if city:
+        source_sql += " WHERE city = ?"
+    source_sql += " GROUP BY source_type"
+    source_rows = conn.execute(source_sql, cp).fetchall()
     return jsonify({
         "total_deals": row["total_deals"],
         "total_firms": row["total_firms"],
@@ -58,6 +65,7 @@ def get_deals():
     per_page = _safe_int(request.args.get("per_page", DEFAULT_PAGE_SIZE), DEFAULT_PAGE_SIZE, 1, 100)
     stage = request.args.get("stage")
     category = request.args.get("category")
+    city = request.args.get("city")
     firm = request.args.get("firm")
     search = request.args.get("q")
     sort_by = request.args.get("sort", "date_announced")
@@ -72,6 +80,9 @@ def get_deals():
     if category:
         where_clauses.append("c.name = ?")
         params.append(category)
+    if city:
+        where_clauses.append("d.city = ?")
+        params.append(city)
     if firm:
         where_clauses.append("f.name LIKE ?")
         params.append(f"%{firm}%")
@@ -107,7 +118,7 @@ def get_deals():
             d.id, d.company_name, d.company_website, d.company_description,
             d.stage, d.amount_usd, d.amount_disclosed,
             d.date_announced, d.source_type, d.source_url,
-            d.confidence_score, d.created_at,
+            d.confidence_score, d.created_at, d.city,
             c.name as category
         FROM deals d
         LEFT JOIN categories c ON d.category_id = c.id
@@ -158,6 +169,7 @@ def get_deals():
             "source_type": row["source_type"],
             "source_url": row["source_url"],
             "confidence_score": row["confidence_score"],
+            "city": row["city"],
             "firms": firms_by_deal.get(deal_id, []),
             "investors": investors_by_deal.get(deal_id, []),
         })
@@ -400,6 +412,7 @@ def export_csv():
 
     stage = request.args.get("stage")
     category = request.args.get("category")
+    city = request.args.get("city")
     search = request.args.get("q")
 
     where_clauses = []
@@ -410,6 +423,9 @@ def export_csv():
     if category:
         where_clauses.append("c.name = ?")
         params.append(category)
+    if city:
+        where_clauses.append("d.city = ?")
+        params.append(city)
     if search:
         where_clauses.append("(d.company_name LIKE ? OR d.raw_text LIKE ?)")
         params.extend([f"%{search}%", f"%{search}%"])
@@ -420,7 +436,7 @@ def export_csv():
         SELECT DISTINCT
             d.company_name, d.stage, d.amount_usd,
             d.date_announced, d.source_type, d.source_url,
-            d.confidence_score, d.company_website,
+            d.confidence_score, d.company_website, d.city,
             c.name as category,
             GROUP_CONCAT(DISTINCT f.name) as firms
         FROM deals d
@@ -436,21 +452,36 @@ def export_csv():
     writer = csv.writer(output)
     writer.writerow([
         "Company", "Stage", "Amount (USD)", "Date Announced",
-        "Source", "Source URL", "Confidence", "Website", "Category", "Firms"
+        "Source", "Source URL", "Confidence", "Website", "City", "Category", "Firms"
     ])
     for r in rows:
         writer.writerow([
             r["company_name"], r["stage"], r["amount_usd"],
             r["date_announced"], r["source_type"], r["source_url"],
-            r["confidence_score"], r["company_website"],
+            r["confidence_score"], r["company_website"], r["city"],
             r["category"], r["firms"],
         ])
 
     return Response(
         output.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=nyc_vc_deals.csv"},
+        headers={"Content-Disposition": "attachment; filename=vc_deals.csv"},
     )
+
+
+@deals_bp.route("/api/cities", methods=["GET"])
+def get_cities():
+    """City list with deal counts."""
+    conn = g.db
+    rows = conn.execute("""
+        SELECT city, COUNT(*) as deal_count,
+               COALESCE(SUM(amount_usd), 0) as total_capital
+        FROM deals
+        WHERE city IS NOT NULL
+        GROUP BY city
+        ORDER BY deal_count DESC
+    """).fetchall()
+    return jsonify([dict(r) for r in rows])
 
 
 @deals_bp.route("/api/categories", methods=["GET"])

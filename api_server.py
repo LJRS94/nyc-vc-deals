@@ -507,13 +507,17 @@ def _run_scrape_background(days_back: int = 30):
         try:
             # Auto-promote frequently-rejected patterns to auto-reject
             update_auto_reject_patterns(conn)
-            # Run audit and log results
-            audit = run_audit(conn)
-            logger.info(
-                f"QC audit: {audit['total_deals']} deals, "
-                f"{audit['total_issues']} issues, "
-                f"health={audit['health_score']}"
-            )
+            # Run audit and log results (all data types)
+            from quality_control import run_audit_all
+            audit_all = run_audit_all(conn)
+            for dtype, audit in audit_all.items():
+                total_key = f"total_{dtype}" if dtype != "deals" else "total_deals"
+                total = audit.get(total_key, audit.get("total_deals", audit.get("total_firms", audit.get("total_portfolio_companies", 0))))
+                logger.info(
+                    f"QC audit [{dtype}]: {total} records, "
+                    f"{audit['total_issues']} issues, "
+                    f"health={audit['health_score']}"
+                )
         except Exception as e:
             logger.warning(f"QC audit warning: {e}")
 
@@ -555,6 +559,21 @@ def _run_portfolio_scrape():
 
         conn = get_connection()
         pc_count = conn.execute("SELECT COUNT(*) FROM portfolio_companies").fetchone()[0]
+
+        # Post-scrape QC: clean and audit portfolio companies
+        try:
+            from quality_control import clean_portfolio_companies, run_audit_portfolio, init_qc_tables
+            init_qc_tables(conn)
+            cleaned = clean_portfolio_companies(conn)
+            if cleaned:
+                logger.info(f"Portfolio post-scrape cleanup: {cleaned} entries fixed/removed")
+            audit = run_audit_portfolio(conn)
+            logger.info(
+                f"Portfolio audit: {audit['total_portfolio_companies']} companies, "
+                f"{audit['total_issues']} issues, health={audit['health_score']}"
+            )
+        except Exception as e:
+            logger.warning(f"Portfolio QC warning: {e}")
 
         # Auto-verify deal-firm links against portfolio data
         try:
@@ -672,7 +691,7 @@ def scrape_status():
 # ── One-time data cleanup migration ──────────────────────────
 def _run_data_cleanup():
     """Clean junk entities and duplicates from the database.
-    Safe to run multiple times — idempotent.
+    Delegates to unified QC system. Safe to run multiple times — idempotent.
     """
     import re
     conn = get_connection()
@@ -733,187 +752,22 @@ def _run_data_cleanup():
     except Exception as e:
         logger.warning(f"Dedup cleanup warning: {e}")
 
-    # 4. Clean junk portfolio company entries
-    junk_portfolio_conditions = [
-        "company_name GLOB '[12][0-9][0-9][0-9]' AND LENGTH(company_name) = 4",
-        "company_name LIKE '%Founder(s)%'",
-        "company_name LIKE '%Partner Since%'",
-        "company_name LIKE '%Exit' AND LENGTH(company_name) < 30",
-        "LENGTH(company_name) > 60",
-        "company_name LIKE '%DISCLAIMER%'",
-        "company_name LIKE 'Country:%'",
-        "company_name LIKE 'CountryUS%'",
-        "company_name LIKE 'Investment Status:%'",
-        "company_name LIKE 'Entry Stage:%'",
-        "company_name LIKE 'Entry Year:%'",
-        "company_name LIKE 'Industry:%'",
-        "company_name LIKE 'Sector:%'",
-        "company_name LIKE 'Year of Investment%'",
-        "company_name LIKE '%Published on%'",
-        "company_name LIKE '%Stage RTP%'",
-        "company_name LIKE '%SectorFintech%'",
-        "company_name LIKE '%SectorAI%'",
-        "company_name LIKE '%SectorSaaS%'",
-        "company_name LIKE '%SectorE-commerce%'",
-        "company_name LIKE '%SectorAgriculture%'",
-        "company_name LIKE '%CustomerB2%' AND LENGTH(company_name) > 50",
-        "LENGTH(TRIM(company_name)) <= 1",
-        "TRIM(company_name) = ''",
-        # Concatenated metadata patterns
-        "company_name LIKE 'Initial investment:%'",
-        "company_name LIKE '%Status:Current%'",
-        "company_name LIKE '%Status:Exited%'",
-        "company_name LIKE '%StatusCurrent%'",
-        "company_name LIKE '%StatusExited%'",
-        "company_name LIKE '%AllMedia'",
-        "company_name LIKE '%CommerceAll'",
-        "company_name LIKE '%FinTechAll'",
-        "company_name LIKE '%HealthcareAll'",
-        "company_name LIKE '%EducationAll'",
-        "company_name LIKE '%SaaSAll'",
-        "company_name LIKE '%PropTechAll'",
-        "company_name LIKE '%SocialAll'",
-        "company_name LIKE '%AllHR'",
-        "company_name LIKE '%AllPropTech'",
-        "company_name LIKE '%AllSocial'",
-        "company_name LIKE '%AllCommerce'",
-        "company_name LIKE '%AllSaaS'",
-        "company_name LIKE '%AllFinTech'",
-        # Social/UI link junk
-        "company_name LIKE '%Link opens in new tab%'",
-        "company_name LIKE 'Spotlight%' AND company_name LIKE '%:%'",
-        "company_name LIKE 'Filter%' AND LENGTH(company_name) > 10",
-        # City+category concatenations
-        "company_name LIKE 'Austin, TX%' AND LENGTH(company_name) > 12",
-        "company_name LIKE 'Boston, MA%' AND LENGTH(company_name) > 12",
-        "company_name LIKE 'San Francisco, CA%' AND LENGTH(company_name) > 20",
-        "company_name LIKE 'Tel Aviv, Israel%' AND LENGTH(company_name) > 18",
-        "company_name LIKE 'New York, NY%' AND LENGTH(company_name) > 14",
-        "company_name LIKE 'London, UK%' AND LENGTH(company_name) > 12",
-        "company_name LIKE 'Toronto, Canada%' AND LENGTH(company_name) > 18",
-        "company_name LIKE 'Washington DC%' AND LENGTH(company_name) > 15",
-        # Stock tickers
-        "company_name LIKE 'NASDAQ%'",
-        "company_name LIKE 'NYSE%'",
-        # Enterprise/Saas concatenations
-        "company_name LIKE '%Enterprise/Saas%'",
-        # Uppercase UI junk
-        "company_name IN ('COMPANY↑','PLAY VIDEO','VIEW LEGAL DISCLOSURES','BROWSE OUR—PORTFOLIO','NVP PROMISE','ENTERPRISE WEEKLY NEWSLETTER')",
-    ]
-    pc_removed = 0
-    for cond in junk_portfolio_conditions:
-        try:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM portfolio_companies WHERE " + cond
-            ).fetchone()[0]
-            if count > 0:
-                conn.execute("DELETE FROM portfolio_companies WHERE " + cond)
-                pc_removed += count
-        except Exception:
-            pass
+    # 4. Clean junk portfolio companies (delegated to unified QC)
+    try:
+        from quality_control import clean_portfolio_companies, clean_firms
+        pc_removed = clean_portfolio_companies(conn)
+        if pc_removed:
+            logger.info(f"Cleanup: QC removed/fixed {pc_removed} junk portfolio entries")
+    except Exception as e:
+        logger.warning(f"Portfolio cleanup warning: {e}")
 
-    # Clean nav/UI junk from portfolio (exact match, case insensitive)
-    nav_junk = [
-        "GET IN TOUCH", "Go-To-Market Services", "View All", "Load More",
-        "Show More", "Learn More", "Read More", "Visit Website", "Visit Site",
-        "Contact Us", "About Us", "About", "Our Team", "Our Portfolio",
-        "Our Startups", "Our Mission", "See All", "See More",
-        "Privacy Policy", "Privacy", "Privacy Center", "Terms of Service",
-        "Cookie Policy", "Cookie Settings", "Portfolio", "Subscribe",
-        "Sign Up", "Log In", "Login", "Sign In", "Filter", "Active", "Exited",
-        "Fundraising", "Founder Services", "Investments", "Partners",
-        "Network", "AI Apps", "Cybersecurity", "Healthcare",
-        "Data, AI & Machine Learning", "Enterprise Apps & Vertical AI",
-        "Infrastructure & Developer Tools", "Commerce & Fintech",
-        "Energy & Infrastructure", "AI Infrastructure & Developer Platforms",
-        "All Companies", "All", "How We Invest", "For Investors",
-        "For Founders", "For LPs", "For LP's", "Trending topics",
-        "Disclosures", "Content", "Spotlight", "Stage", "Podcast",
-        "Careers", "Events", "Overview", "Contact", "Home", "Resources",
-        "News", "Blog", "Press", "Insights", "Featured", "Enterprise",
-        "Commerce", "Crypto", "Robotics", "Space", "Hardware", "Fintech",
-        "Loading...", "Canada",
-    ]
-    for junk_name in nav_junk:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM portfolio_companies WHERE LOWER(TRIM(company_name)) = LOWER(?)",
-            (junk_name,),
-        ).fetchone()[0]
-        if count > 0:
-            conn.execute(
-                "DELETE FROM portfolio_companies WHERE LOWER(TRIM(company_name)) = LOWER(?)",
-                (junk_name,),
-            )
-            pc_removed += count
-
-    # Fix "ExitsTrue/ExitsFalse" suffixes on company names
-    exits_rows = conn.execute(
-        "SELECT id, company_name, firm_id FROM portfolio_companies "
-        "WHERE company_name LIKE '%Exitstrue' OR company_name LIKE '%Exitsfalse'"
-    ).fetchall()
-    for r in exits_rows:
-        cleaned = re.sub(r"Exits?(true|false)$", "", r["company_name"]).strip()
-        if cleaned and len(cleaned) > 1:
-            exists = conn.execute(
-                "SELECT id FROM portfolio_companies WHERE firm_id = ? AND company_name = ?",
-                (r["firm_id"], cleaned),
-            ).fetchone()
-            if exists:
-                conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
-            else:
-                from database import _normalize_name
-                conn.execute(
-                    "UPDATE portfolio_companies SET company_name = ?, company_name_normalized = ? WHERE id = ?",
-                    (cleaned, _normalize_name(cleaned), r["id"]),
-                )
-        else:
-            conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
-        pc_removed += 1
-
-    # Fix "(Acquired)" and "(Exited)" tags on company names
-    for tag in ['(Acquired)', '(Exited)']:
-        tag_rows = conn.execute(
-            "SELECT id, company_name, firm_id FROM portfolio_companies WHERE company_name LIKE ?",
-            (f'%{tag}%',),
-        ).fetchall()
-        for r in tag_rows:
-            cleaned = r["company_name"].replace(tag, '').strip()
-            if cleaned and len(cleaned) > 1:
-                exists = conn.execute(
-                    "SELECT id FROM portfolio_companies WHERE firm_id = ? AND company_name = ? AND id != ?",
-                    (r["firm_id"], cleaned, r["id"]),
-                ).fetchone()
-                if exists:
-                    conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
-                else:
-                    from database import _normalize_name
-                    conn.execute(
-                        "UPDATE portfolio_companies SET company_name = ?, company_name_normalized = ? WHERE id = ?",
-                        (cleaned, _normalize_name(cleaned), r["id"]),
-                    )
-            pc_removed += 1
-
-    # Delete description-like entries (long phrases that are clearly not company names)
-    desc_rows = conn.execute(
-        "SELECT id, company_name FROM portfolio_companies WHERE LENGTH(company_name) > 35"
-    ).fetchall()
-    for r in desc_rows:
-        name = r["company_name"]
-        words = name.split()
-        # Multi-word descriptive phrases (4+ words, starts with cap, rest lowercase)
-        if len(words) >= 5 and not re.search(r'\(', name):
-            lower_words = [w for w in words[1:] if w[0].islower() or w in ('in', 'for', 'of', 'the', 'and', 'a', 'to', 'an', '&')]
-            if len(lower_words) >= len(words) - 2:
-                conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
-                pc_removed += 1
-        # Description ending with common suffixes
-        elif name.endswith(('Platform', 'Solution', 'Solutions')) and len(name) > 30:
-            conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
-            pc_removed += 1
-
-    if pc_removed:
-        conn.commit()
-        logger.info(f"Cleanup: removed/fixed {pc_removed} junk portfolio entries")
+    # 5. Clean duplicate/junk firms
+    try:
+        firm_removed = clean_firms(conn)
+        if firm_removed:
+            logger.info(f"Cleanup: QC merged {firm_removed} duplicate firms")
+    except Exception as e:
+        logger.warning(f"Firm cleanup warning: {e}")
 
 
 # Start the scheduler when running under gunicorn (production)

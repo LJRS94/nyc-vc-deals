@@ -27,7 +27,7 @@ from scrapers.utils import (
     should_skip_deal, validate_deal_amount, classify_stage_from_amount,
     is_duplicate_deal,
     parse_pub_date as _parse_pub_date,
-    is_nyc_related,
+    is_nyc_related, detect_city,
     link_investors_to_deal,
 )
 from scrapers.llm_extract import (
@@ -620,7 +620,8 @@ def process_deal(conn, title: str, url: str, full_text: str,
                  source_type: str = "news_article",
                  date_announced: str = None,
                  nyc_confirmed: bool = False,
-                 llm_result: dict = None) -> Optional[int]:
+                 llm_result: dict = None,
+                 city: str = None) -> Optional[int]:
     """
     Process a single deal from scraped content.
     LLM-first extraction, regex fallback, then UNIFIED quality gate.
@@ -635,6 +636,7 @@ def process_deal(conn, title: str, url: str, full_text: str,
     category_name = None
     investors = []
     is_nyc = nyc_confirmed
+    deal_city = city  # explicit city from caller
 
     if llm_result:
         # Reject non-funding articles
@@ -649,6 +651,13 @@ def process_deal(conn, title: str, url: str, full_text: str,
         if company_name:
             llm_nyc = llm_result.get("is_nyc")
             is_nyc = nyc_confirmed or llm_nyc or is_nyc_related(combined_text)
+
+            # Multi-city: detect city from text if not already set
+            if not deal_city:
+                deal_city = detect_city(combined_text)
+            # Backward compat: if NYC-confirmed but no city detected, tag as New York
+            if not deal_city and is_nyc:
+                deal_city = "New York"
 
             stage = llm_result.get("stage", "Unknown")
             if stage not in ("Pre-Seed", "Seed", "Series A", "Series B", "Series C+", "Unknown"):
@@ -680,6 +689,10 @@ def process_deal(conn, title: str, url: str, full_text: str,
         if not company_name:
             return None
         is_nyc = nyc_confirmed or is_nyc_related(combined_text)
+        if not deal_city:
+            deal_city = detect_city(combined_text)
+        if not deal_city and is_nyc:
+            deal_city = "New York"
         stage = detect_stage(combined_text)
         amount = extract_amount(full_text, title=title)
         if amount and not validate_deal_amount(amount, stage):
@@ -688,8 +701,8 @@ def process_deal(conn, title: str, url: str, full_text: str,
         if not investors:
             investors = extract_investors(combined_text)
 
-    # NYC gate (applied regardless of extraction path)
-    if not is_nyc:
+    # City gate: must match at least one enabled city (replaces old NYC-only gate)
+    if not deal_city and not is_nyc:
         return None
 
     # ── Step 2: Unified Quality Gate ──
@@ -707,6 +720,7 @@ def process_deal(conn, title: str, url: str, full_text: str,
         raw_text=combined_text[:2000],
         source_url=url,
         category_id=cat_id,
+        city=deal_city,
     )
 
     if not accepted:
@@ -741,17 +755,24 @@ def _iter_months(months_back: int):
         yield year, month, month_start, month_end
 
 
-def _generate_google_queries(months_back: int) -> List[str]:
-    """Generate month-by-month Google News queries using after:/before: operators."""
+def _generate_google_queries(months_back: int, city_cfg: dict = None) -> List[str]:
+    """Generate month-by-month Google News queries using after:/before: operators.
+
+    If city_cfg is provided, generates queries for that city's locations.
+    Otherwise defaults to NYC queries for backward compat.
+    """
+    locations = city_cfg["news_locations"] if city_cfg else ["NYC", '"New York"']
+    loc_primary = locations[0]
+    loc_quoted = locations[1] if len(locations) > 1 else f'"{loc_primary}"'
+
     templates = [
-        'NYC startup funding raises after:{after} before:{before}',
-        '"New York" startup "Series A" OR "seed" OR "Series B" after:{after} before:{before}',
-        '"New York" startup raises million after:{after} before:{before}',
-        'NYC fintech OR healthtech OR "AI startup" funding after:{after} before:{before}',
-        'NYC startup secures OR closes round after:{after} before:{before}',
-        'Manhattan OR Brooklyn startup raises funding after:{after} before:{before}',
-        'site:techcrunch.com "raises" "New York" OR "NYC" after:{after} before:{before}',
-        'site:forbes.com "New York" startup raises after:{after} before:{before}',
+        f'{loc_primary} startup funding raises after:{{after}} before:{{before}}',
+        f'{loc_quoted} startup "Series A" OR "seed" OR "Series B" after:{{after}} before:{{before}}',
+        f'{loc_quoted} startup raises million after:{{after}} before:{{before}}',
+        f'{loc_primary} fintech OR healthtech OR "AI startup" funding after:{{after}} before:{{before}}',
+        f'{loc_primary} startup secures OR closes round after:{{after}} before:{{before}}',
+        f'site:techcrunch.com "raises" {loc_quoted} OR "{loc_primary}" after:{{after}} before:{{before}}',
+        f'site:forbes.com {loc_quoted} startup raises after:{{after}} before:{{before}}',
     ]
 
     queries = []
@@ -763,10 +784,13 @@ def _generate_google_queries(months_back: int) -> List[str]:
     return queries
 
 
-def _generate_diverse_queries() -> List[str]:
-    """Generate diverse topic/sector queries to maximize unique article coverage."""
-    # Core funding verbs × location combinations
-    locations = ["NYC", '"New York"', "Manhattan", "Brooklyn"]
+def _generate_diverse_queries(city_cfg: dict = None) -> List[str]:
+    """Generate diverse topic/sector queries to maximize unique article coverage.
+
+    If city_cfg is provided, generates queries for that city's locations.
+    Otherwise defaults to NYC queries for backward compat.
+    """
+    locations = city_cfg["news_locations"] if city_cfg else ["NYC", '"New York"', "Manhattan", "Brooklyn"]
     verbs = ["raises", "secures", "closes", "funding"]
     stages = ["seed", "Series A", "Series B", "pre-seed", "venture"]
     sectors = [
@@ -787,7 +811,7 @@ def _generate_diverse_queries() -> List[str]:
         for stage in stages:
             queries.append(f"{loc} startup {stage} funding")
     # Location × sector combinations (biggest variety driver)
-    for loc in locations[:2]:  # NYC and "New York" only to limit total
+    for loc in locations[:2]:
         for sector in sectors:
             queries.append(f"{loc} {sector} startup funding")
     # Amount-based queries (by year to catch historical deals)
@@ -818,17 +842,17 @@ def _generate_diverse_queries() -> List[str]:
     # Publication-scoped queries
     for site in ["techcrunch.com", "forbes.com", "venturebeat.com",
                   "crunchbase.com", "businessinsider.com"]:
-        queries.append(f"site:{site} NYC startup raises")
-        queries.append(f'site:{site} "New York" startup funding')
+        for loc in locations[:2]:
+            queries.append(f"site:{site} {loc} startup raises")
+            queries.append(f'site:{site} {loc} startup funding')
 
-    # LinkedIn funding announcements (founders post "raised" on LinkedIn)
-    queries.extend([
-        'site:linkedin.com "raised" "seed" NYC startup',
-        'site:linkedin.com "raised" "million" "New York" startup',
-        'site:linkedin.com "pre-seed" OR "seed round" NYC',
-        'site:linkedin.com "series a" "New York" raised',
-        'site:linkedin.com "excited to announce" raised NYC',
-    ])
+    # LinkedIn funding announcements
+    for loc in locations[:2]:
+        queries.extend([
+            f'site:linkedin.com "raised" "seed" {loc} startup',
+            f'site:linkedin.com "raised" "million" {loc} startup',
+            f'site:linkedin.com "series a" {loc} raised',
+        ])
 
     return queries
 
@@ -875,6 +899,7 @@ def scrape_builtin_recently_funded() -> List[Dict]:
                 "description": text[:500],
                 "source_type": "news_article",
                 "nyc_confirmed": True,
+                "city": "New York",
             })
 
         logger.info(f"BuiltInNYC: found {len(results)} recently funded companies")
@@ -927,6 +952,7 @@ def scrape_crunchbase_news_nyc() -> List[Dict]:
                         "description": desc,
                         "source_type": "news_article",
                         "nyc_confirmed": True,
+                        "city": "New York",
                     })
 
             logger.info(f"Crunchbase News NYC: found {len(results)} articles from {page_url}")
@@ -938,7 +964,9 @@ def scrape_crunchbase_news_nyc() -> List[Dict]:
 
 
 def run_news_scraper(days_back: int = 14):
-    """Main entry point for news scraping."""
+    """Main entry point for news scraping. Loops over all enabled cities."""
+    from config import get_enabled_cities
+
     conn = get_connection()
     log_id = log_scrape(conn, "news_press")
 
@@ -949,16 +977,19 @@ def run_news_scraper(days_back: int = 14):
         months_back = max(1, days_back // 30)
         all_articles = []
 
-        # ── Bing News RSS — diverse topic queries (primary, no rate limiting) ──
-        bing_queries = _generate_diverse_queries()
-        logger.info(f"Bing News: {len(bing_queries)} diverse queries")
-        for i, query in enumerate(bing_queries):
-            articles = scrape_bing_news(query, max_results=30)
-            for a in articles:
-                a["nyc_confirmed"] = True
-            all_articles.extend(articles)
-            time.sleep(0.1)  # light touch — Bing doesn't rate-limit aggressively
-        logger.info(f"Bing News: collected {len(all_articles)} articles")
+        # ── Bing News RSS — diverse topic queries per city ──
+        for city_cfg in get_enabled_cities():
+            city_name = city_cfg["display_name"]
+            bing_queries = _generate_diverse_queries(city_cfg=city_cfg)
+            logger.info(f"Bing News [{city_name}]: {len(bing_queries)} diverse queries")
+            for i, query in enumerate(bing_queries):
+                articles = scrape_bing_news(query, max_results=30)
+                for a in articles:
+                    a["city"] = city_name
+                    a["nyc_confirmed"] = True  # backward compat
+                all_articles.extend(articles)
+                time.sleep(0.1)
+        logger.info(f"Bing News: collected {len(all_articles)} articles across all cities")
 
         # Google News RSS disabled — consistently returns 503. Bing covers same ground.
         # Google CSE disabled — same rate-limit issues.
@@ -1008,6 +1039,7 @@ def run_news_scraper(days_back: int = 14):
             title = article.get("title", "")
             date = _parse_pub_date(article.get("date", ""))
             nyc_ok = article.get("nyc_confirmed", False)
+            article_city = article.get("city")
             desc = article.get("description", "")
             if len(desc) >= 100:
                 full_text = desc  # RSS already has enough text
@@ -1016,25 +1048,26 @@ def run_news_scraper(days_back: int = 14):
                 full_text = details.get("text", desc)
             else:
                 full_text = desc
-            enriched.append((title, url, full_text, article.get("source_type", "news_article"), date, nyc_ok))
+            enriched.append((title, url, full_text, article.get("source_type", "news_article"), date, nyc_ok, article_city))
 
         # ── LLM batch extraction ──
         llm_articles = [
             {"title": title, "text": full_text}
-            for title, url, full_text, source_type, date, nyc_ok in enriched
+            for title, url, full_text, source_type, date, nyc_ok, article_city in enriched
         ]
         llm_results = extract_deals_batch(llm_articles) if llm_articles else []
         logger.info(f"LLM extracted {sum(1 for v in llm_results if v)}/{len(llm_articles)} articles")
 
         # Batch insert deals (DB only, no HTTP)
         with batch_connection() as conn:
-            for i, (title, url, full_text, source_type, date, nyc_ok) in enumerate(enriched):
+            for i, (title, url, full_text, source_type, date, nyc_ok, article_city) in enumerate(enriched):
                 try:
                     llm_result = llm_results[i] if i < len(llm_results) else None
                     deal_id = process_deal(conn, title, url, full_text,
                                            source_type=source_type, date_announced=date,
                                            nyc_confirmed=nyc_ok,
-                                           llm_result=llm_result)
+                                           llm_result=llm_result,
+                                           city=article_city)
                     if deal_id:
                         total_new += 1
                 except Exception as e:

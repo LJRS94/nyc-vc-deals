@@ -38,6 +38,7 @@ from fetcher import fetch
 from scrapers.utils import (
     normalize_company_name, classify_sector, classify_stage_from_amount,
     normalize_stage, parse_amount, should_skip_deal, validate_deal_amount,
+    detect_city,
 )
 from quality_control import validate_deal
 
@@ -101,12 +102,13 @@ OPENCORPORATES_SEARCH_TERMS = [
 
 def run_opencorporates_scraper(days_back: int = 30) -> dict:
     """
-    Search OpenCorporates for recently registered companies in New York
-    with startup-indicator terms. Requires OPENCORPORATES_API_KEY env var
-    (the v0.4 API no longer allows unauthenticated requests).
+    Search OpenCorporates for recently registered companies across all enabled
+    cities' jurisdictions. Requires OPENCORPORATES_API_KEY env var.
 
     Returns stats dict: {found, new, skipped, errors}.
     """
+    from config import get_enabled_cities
+
     api_key = os.environ.get("OPENCORPORATES_API_KEY")
     if not api_key:
         logger.warning("[OpenCorporates] OPENCORPORATES_API_KEY not set — skipping (API requires authentication)")
@@ -122,59 +124,63 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
     all_companies = []
 
     try:
-        for term in OPENCORPORATES_SEARCH_TERMS:
-            if len(all_companies) >= 200:
-                break
+        for city_cfg in get_enabled_cities():
+            jurisdiction = city_cfg.get("opencorporates_jurisdiction", "us_ny")
+            city_name = city_cfg["display_name"]
 
-            params = {
-                "q": term,
-                "jurisdiction_code": "us_ny",
-                "created_since": created_since,
-                "order": "score",
-                "per_page": 30,
-            }
-            if api_key:
-                params["api_token"] = api_key
+            for term in OPENCORPORATES_SEARCH_TERMS:
+                if len(all_companies) >= 200:
+                    break
 
-            try:
-                resp = fetch(
-                    "https://api.opencorporates.com/v0.4/companies/search",
-                    params=params,
-                    timeout=15,
-                    ttl=OPENCORPORATES_TTL,
-                )
+                params = {
+                    "q": term,
+                    "jurisdiction_code": jurisdiction,
+                    "created_since": created_since,
+                    "order": "score",
+                    "per_page": 30,
+                }
+                if api_key:
+                    params["api_token"] = api_key
 
-                if resp.status_code == 429:
-                    logger.warning("[OpenCorporates] Rate limited — backing off 30s")
-                    time.sleep(30)
-                    # Retry once after backoff
+                try:
                     resp = fetch(
                         "https://api.opencorporates.com/v0.4/companies/search",
-                        params=params, timeout=15, ttl=OPENCORPORATES_TTL,
+                        params=params,
+                        timeout=15,
+                        ttl=OPENCORPORATES_TTL,
                     )
+
                     if resp.status_code == 429:
-                        logger.warning("[OpenCorporates] Still rate limited — stopping")
-                        break
-                if resp.status_code != 200:
-                    logger.warning(f"[OpenCorporates] HTTP {resp.status_code} for term '{term}'")
+                        logger.warning("[OpenCorporates] Rate limited — backing off 30s")
+                        time.sleep(30)
+                        resp = fetch(
+                            "https://api.opencorporates.com/v0.4/companies/search",
+                            params=params, timeout=15, ttl=OPENCORPORATES_TTL,
+                        )
+                        if resp.status_code == 429:
+                            logger.warning("[OpenCorporates] Still rate limited — stopping")
+                            break
+                    if resp.status_code != 200:
+                        logger.warning(f"[OpenCorporates] HTTP {resp.status_code} for term '{term}'")
+                        stats["errors"] += 1
+                        continue
+
+                    data = resp.json()
+                    companies = data.get("results", {}).get("companies", [])
+
+                    for entry in companies:
+                        company = entry.get("company", {})
+                        company["_city"] = city_name
+                        all_companies.append(company)
+
+                    logger.info(f"[OpenCorporates] [{city_name}] term='{term}': {len(companies)} results")
+
+                except Exception as e:
+                    logger.warning(f"[OpenCorporates] Search failed for '{term}': {e}")
                     stats["errors"] += 1
-                    continue
 
-                data = resp.json()
-                companies = data.get("results", {}).get("companies", [])
-
-                for entry in companies:
-                    company = entry.get("company", {})
-                    all_companies.append(company)
-
-                logger.info(f"[OpenCorporates] term='{term}': {len(companies)} results")
-
-            except Exception as e:
-                logger.warning(f"[OpenCorporates] Search failed for '{term}': {e}")
-                stats["errors"] += 1
-
-            # Rate limit: 3s between queries (free tier is strict)
-            time.sleep(3)
+                # Rate limit: 3s between queries (free tier is strict)
+                time.sleep(3)
 
         stats["found"] = len(all_companies)
         logger.info(f"[OpenCorporates] Collected {stats['found']} companies total")
@@ -195,6 +201,8 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
                     inc_date = company.get("incorporation_date")
                     oc_url = company.get("opencorporates_url", "")
 
+                    oc_city = company.get("_city")
+
                     accepted, reason, cleaned = validate_deal(
                         conn, name,
                         date_announced=inc_date,
@@ -207,6 +215,7 @@ def run_opencorporates_scraper(days_back: int = 30) -> dict:
                             "registered_address": company.get("registered_address_in_full"),
                             "source": "opencorporates",
                         })[:2000],
+                        city=oc_city,
                     )
                     if not accepted:
                         stats["skipped"] += 1
@@ -269,22 +278,20 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
     all_rounds = []
 
     try:
-        # Search for funding rounds with NYC location signals
-        search_queries = [
-            "New York funding",
-            "NYC startup funding",
-            "Manhattan startup",
-            "Brooklyn startup funding",
-        ]
+        # Search for funding rounds across enabled cities
+        from config import get_enabled_cities
+        search_queries = []
+        for city_cfg in get_enabled_cities():
+            for loc in city_cfg["news_locations"][:2]:
+                search_queries.append((f"{loc} startup funding", city_cfg["display_name"]))
 
-        for query in search_queries:
+        for query, cb_city in search_queries:
             if len(all_rounds) >= 100:
                 break
 
             params = {
                 "user_key": api_key,
                 "query": query,
-                "location_uuids": "528f5e3c-90d1-1f82-6672-7571f10e0c8c",  # New York City UUID
                 "updated_since": since_date,
                 "sort_order": "updated_at DESC",
                 "per_page": 25,
@@ -308,7 +315,6 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
                 if resp.status_code != 200:
                     logger.debug(f"[Crunchbase] HTTP {resp.status_code} for query '{query}'")
                     stats["errors"] += 1
-                    # Try the ODM endpoint as fallback
                     resp = fetch(
                         "https://api.crunchbase.com/api/v4/entities/funding_rounds",
                         params=params,
@@ -324,15 +330,15 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
 
                 for entity in entities:
                     props = entity.get("properties", entity)
+                    props["_city"] = cb_city
                     all_rounds.append(props)
 
-                logger.info(f"[Crunchbase] query='{query}': {len(entities)} results")
+                logger.info(f"[Crunchbase] [{cb_city}] query='{query}': {len(entities)} results")
 
             except Exception as e:
                 logger.warning(f"[Crunchbase] Search failed for '{query}': {e}")
                 stats["errors"] += 1
 
-            # Rate limit: 2s between queries
             time.sleep(2)
 
         stats["found"] = len(all_rounds)
@@ -413,6 +419,7 @@ def run_crunchbase_scraper(days_back: int = 30) -> dict:
                         raw_text=json.dumps(props, default=str)[:2000],
                         source_url=source_url,
                         category_id=cat_id,
+                        city=props.get("_city"),
                     )
                     if not accepted:
                         stats["skipped"] += 1
@@ -547,6 +554,7 @@ def run_ny_dos_scraper(days_back: int = 90) -> dict:
                 date_announced=filing_date,
                 raw_text=f"NY DOS filing: {name}, formed {filing_date}, county: {county}",
                 category_id=cat_id,
+                city="New York",
             )
             if not accepted:
                 stats["skipped"] += 1
@@ -608,11 +616,18 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
         cutoff = datetime.now() - timedelta(days=days_back)
         reader = csv.DictReader(io.StringIO(resp.text))
 
+        # Build set of enabled state codes for filtering
+        from config import get_enabled_cities
+        enabled_states = {}
+        for city_cfg in get_enabled_cities():
+            sc = city_cfg["state_code"]
+            enabled_states[sc] = city_cfg["display_name"]
+
         all_awards = []
         for row in reader:
-            # Filter to NY state only
+            # Filter to enabled states
             state = (row.get("Company State") or row.get("State") or "").strip().upper()
-            if state != "NY":
+            if state not in enabled_states:
                 continue
 
             # Filter by date
@@ -683,6 +698,15 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                         if sbir_id else "https://www.sbir.gov"
                     )
 
+                    # Detect city from address fields
+                    award_state = (award.get("Company State") or "").strip().upper()
+                    award_city_text = (award.get("Company City") or "").strip()
+                    sbir_city = enabled_states.get(award_state)
+                    # Refine: use detect_city on the city+state text
+                    detected = detect_city(f"{award_city_text} {award_state}")
+                    if detected:
+                        sbir_city = detected
+
                     accepted, reason, cleaned = validate_deal(
                         bconn, company_name,
                         amount=amount,
@@ -693,12 +717,13 @@ def run_sbir_scraper(days_back: int = 180) -> dict:
                             "agency": agency,
                             "program": program,
                             "sbir_id": sbir_id,
-                            "city": (award.get("Company City") or "").strip(),
-                            "state": "NY",
+                            "city": award_city_text,
+                            "state": award_state,
                             "source": "sbir_gov_csv",
                         })[:2000],
                         source_url=source_url,
                         category_id=cat_id,
+                        city=sbir_city,
                     )
                     if not accepted:
                         stats["skipped"] += 1

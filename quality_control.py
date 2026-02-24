@@ -1,15 +1,19 @@
 """
 Unified Quality Control System for NYC VC Deal Scraper.
 
-ALL deal data — regardless of source — must pass through validate_deal()
-before insertion. This is the single gate for data quality.
+ALL data — regardless of source or type — must pass through the appropriate
+validation gate before insertion:
+  - validate_deal()              — deals
+  - validate_portfolio_company() — portfolio companies
+  - validate_firm()              — VC firms
 
 Features:
   - Unified validation for company name, stage, amount, date, NYC status
   - Smart deduplication (allows multi-round, blocks true duplicates)
   - Rejection logging for self-improvement
-  - Post-ingestion audit that flags suspicious data
+  - Post-ingestion audit that flags suspicious data (deals, portfolio, firms)
   - Quality metrics tracking over time
+  - Cleanup functions to fix/remove junk entries
 """
 
 import re
@@ -67,32 +71,42 @@ CREATE TABLE IF NOT EXISTS qc_patterns (
 
 
 def init_qc_tables(conn):
-    """Create QC tables if they don't exist."""
+    """Create QC tables if they don't exist, and migrate schema if needed."""
     conn.executescript(QC_SCHEMA)
     conn.commit()
+
+    # Migration: add data_type column to existing tables
+    _migrate_tables = ["qc_rejections", "qc_metrics", "qc_patterns"]
+    for table in _migrate_tables:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if "data_type" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN data_type TEXT DEFAULT 'deal'")
+            conn.commit()
+            logger.info(f"Migrated {table}: added data_type column")
 
 
 # ── Rejection Logging ───────────────────────────────────────────
 
 def _log_rejection(conn, company_name: str, reason: str,
-                   source_type: str = None, raw_data: str = None):
+                   source_type: str = None, raw_data: str = None,
+                   data_type: str = 'deal'):
     """Log a rejection for pattern analysis (atomic via savepoint)."""
     try:
         conn.execute("SAVEPOINT rejection_log")
         conn.execute(
-            "INSERT INTO qc_rejections (company_name, reason, source_type, raw_data) "
-            "VALUES (?, ?, ?, ?)",
-            (company_name, reason, source_type, (raw_data or "")[:500])
+            "INSERT INTO qc_rejections (company_name, reason, source_type, raw_data, data_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (company_name, reason, source_type, (raw_data or "")[:500], data_type)
         )
         # Update pattern tracker
         pattern_value = _extract_pattern(company_name, reason)
         if pattern_value:
             conn.execute(
-                "INSERT INTO qc_patterns (pattern_type, pattern_value, hit_count, last_seen) "
-                "VALUES (?, ?, 1, CURRENT_TIMESTAMP) "
+                "INSERT INTO qc_patterns (pattern_type, pattern_value, hit_count, last_seen, data_type) "
+                "VALUES (?, ?, 1, CURRENT_TIMESTAMP, ?) "
                 "ON CONFLICT(pattern_type, pattern_value) DO UPDATE SET "
                 "hit_count = hit_count + 1, last_seen = CURRENT_TIMESTAMP",
-                (reason, pattern_value)
+                (reason, pattern_value, data_type)
             )
         conn.execute("RELEASE rejection_log")
     except Exception as e:
@@ -439,14 +453,21 @@ def update_auto_reject_patterns(conn, min_hits: int = 5):
     return updated
 
 
-def get_rejection_summary(conn, days: int = 30) -> Dict:
-    """Get rejection stats for the last N days."""
+def get_rejection_summary(conn, days: int = 30, data_type: str = None) -> Dict:
+    """Get rejection stats for the last N days, optionally filtered by data_type."""
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    rows = conn.execute(
-        "SELECT reason, COUNT(*) as cnt FROM qc_rejections "
-        "WHERE created_at >= ? GROUP BY reason ORDER BY cnt DESC",
-        (cutoff,)
-    ).fetchall()
+    if data_type:
+        rows = conn.execute(
+            "SELECT reason, COUNT(*) as cnt FROM qc_rejections "
+            "WHERE created_at >= ? AND data_type = ? GROUP BY reason ORDER BY cnt DESC",
+            (cutoff, data_type)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT reason, COUNT(*) as cnt FROM qc_rejections "
+            "WHERE created_at >= ? GROUP BY reason ORDER BY cnt DESC",
+            (cutoff,)
+        ).fetchall()
     return {r[0]: r[1] for r in rows}
 
 
@@ -595,13 +616,626 @@ def merge_cross_source_duplicates(conn) -> int:
 
 
 def record_metrics(conn, source_type: str, submitted: int,
-                   accepted: int, rejections: Dict, avg_confidence: float):
+                   accepted: int, rejections: Dict, avg_confidence: float,
+                   data_type: str = 'deal'):
     """Record quality metrics for a scrape run."""
     conn.execute(
         "INSERT INTO qc_metrics (run_date, source_type, deals_submitted, "
-        "deals_accepted, deals_rejected, rejection_reasons, avg_confidence) "
-        "VALUES (date('now'), ?, ?, ?, ?, ?, ?)",
+        "deals_accepted, deals_rejected, rejection_reasons, avg_confidence, data_type) "
+        "VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?)",
         (source_type, submitted, accepted, submitted - accepted,
-         json.dumps(rejections), avg_confidence)
+         json.dumps(rejections), avg_confidence, data_type)
     )
     conn.commit()
+
+
+# ── Portfolio Company Junk Patterns ────────────────────────────
+# Moved from scrapers/firm_scraper.py for centralized QC
+
+_JUNK_PORTFOLIO_RE = re.compile(
+    r"^(GET IN TOUCH|Go-To-Market|View All|Load More|Show More|"
+    r"Learn More|Read More|Visit Website|Visit Site|Back to Top|Contact Us|"
+    r"About Us|About|Our Team|Our Portfolio|Our Startups|Our Mission|See All|See More|Subscribe|"
+    r"Sign Up|Log In|Login|Sign In|Privacy Policy|Privacy|Privacy Center|"
+    r"Terms of Service|Cookie Policy|Cookie Settings|"
+    r"Filter|Sort|Search|Menu|Close|Open|All Companies|All|"
+    r"Current Portfolio|Previous Portfolio|Active|Exited|"
+    r"Limited Partner Login|Investor Portal|LP Portal|LP Log-In|"
+    r"For Investors|For Founders|For LPs|For LP's|How We Invest|"
+    r"Series [a-e]|Series [A-E]|Pre-Seed|Seed|IPO|"
+    r"Gaming|Health|Health Tech|Consumer|Finance|Media|Software|Education|"
+    r"Marketplace|Other|Resources|News|Blog|Press|Insights|"
+    r"Team|Studio|LinkedIn|Twitter|Facebook|Instagram|Podcast|"
+    r"FAQs?|Reset|Apply|Cancel|Submit|Back|Next|Previous|More|Less|"
+    r"Fundraising|Founder Services|Investments|Partners|Network|"
+    r"Careers|Events|Overview|Contact|Home|Stage|Spotlight|"
+    r"Trending topics|Disclosures|Featured|Enterprise|Commerce|"
+    r"Crypto|Robotics|Space|Hardware|Fintech|Cybersecurity|"
+    r"AI Apps|AI Infrastructure & Developer Platforms|"
+    r"Data, AI & Machine Learning|Energy & Infrastructure|"
+    r"Enterprise Apps & Vertical AI|Infrastructure & Developer Tools|"
+    r"Loading\.\.\.)$",
+    re.I,
+)
+
+_JUNK_ANYWHERE_RE = re.compile(
+    r"(Founder\(s\)|Partner Since|Year of Investment|Investment Status|"
+    r"Entry Stage|Country:|Industry:|Sector:|DISCLAIMER|Portfolio Highlights)",
+    re.I,
+)
+
+_JUNK_CONTENT_RE = re.compile(
+    r"(Published on|Exits?(true|false)$|Stage RTP|SectorFintech|"
+    r"SectorAI|SectorSaaS|SectorE-commerce|SectorAgriculture|CustomerB2[BC]|"
+    r"New York, NY.*Enterprise|Tel Aviv.*Enterprise|"
+    r"San Francisco, CA.*Enterprise|"
+    r"Status:?(Current|Exited|Active)|"
+    r"AllMedia$|AllCommerce$|AllSaaS$|AllFinTech$|AllHealthcare$|"
+    r"AllEducation$|AllHR$|AllPropTech$|AllSocial$|AllCrypto$|"
+    r"CommerceAll$|FinTechAll$|HealthcareAll$|EducationAll$|SaaSAll$|"
+    r"Link opens in new tab|"
+    r"ENTERPRISE WEEKLY NEWSLETTER|BROWSE OUR|PLAY VIDEO|"
+    r"VIEW LEGAL|NVP PROMISE|COMPANY↑|"
+    r"Initial investment:|Entry Year:|Entry Stage:|Country:|"
+    r"Marketplace:All)",
+    re.I,
+)
+
+# Category tokens for detecting category-only concatenations
+_CATEGORY_TOKENS = {
+    'AI', 'CONSUMER', 'Consumer', 'Fintech', 'Healthcare', 'Enterprise',
+    'Saas', 'SaaS', 'Hardware', 'Robotics', 'Space', 'Media', 'Commerce',
+    'Brands', 'Strategy', 'Featured', 'PropTech', 'Social', 'Crypto',
+    'Climate', 'Security', 'Infrastructure', 'Logistics', 'Gaming', 'Education',
+}
+
+
+def is_valid_portfolio_name(name: str) -> bool:
+    """Return True if name looks like a real company name, not UI junk.
+
+    Public API — used by both quality_control and firm_scraper.
+    """
+    if not name or len(name.strip()) < 2:
+        return False
+    name = name.strip()
+    if len(name) > 60:
+        return False
+    if re.match(r"^\d{4}$", name):
+        return False
+    if re.match(r"^\d+$", name):
+        return False
+    if _JUNK_PORTFOLIO_RE.match(name):
+        return False
+    if _JUNK_ANYWHERE_RE.search(name):
+        return False
+    if _JUNK_CONTENT_RE.search(name):
+        return False
+    # Sentence-like patterns (descriptions scraped as names)
+    if len(name) > 40 and any(w in name.lower() for w in
+            [" is a ", " is an ", " provides ", " delivers ", " develops ",
+             " offers ", " enables ", " builds ", " allows ", " revolutionizes ",
+             " partnering ", " dedicated to ", " bringing ", " powered by "]):
+        return False
+    # Description-like prefix
+    if re.match(r"^(AI-powered|An? investment|A specialty|An? AI|A platform|The leading|An? \w+ that)", name, re.I):
+        return False
+    # Concatenated metadata
+    if re.search(r"(Consumer|Media|Health|Finance|Software|Education|Marketplace)\d{4}$", name):
+        return False
+    if re.search(r"Invested\d{4}$", name):
+        return False
+    # Category-only concatenations
+    base = re.sub(r'\d{4}$', '', name).strip()
+    remaining = base
+    for cat in sorted(_CATEGORY_TOKENS, key=len, reverse=True):
+        remaining = remaining.replace(cat, '')
+    if len(remaining.replace('/', '').replace(' ', '').replace('&', '')) == 0 and len(base) > 3:
+        return False
+    if re.match(r'^AI\d{4}$', name):
+        return False
+    if re.match(r"^\(", name):
+        return False
+    if "Acq:" in name:
+        return False
+    if re.match(r'^(NASDAQ|NYSE)', name):
+        return False
+    if re.match(r'^(Design|Built|Made|Powered|Created) by ', name, re.I):
+        return False
+    # City + category concatenations
+    if re.match(r'^(Austin|Boston|London|New York|San Francisco|Tel Aviv|Toronto|Washington)', name) and (',' in name or len(name) > 20):
+        return False
+    if re.match(r'^Filter', name) and len(name) > 10:
+        return False
+    return True
+
+
+# ── Portfolio Company Quality Gate ─────────────────────────────
+
+def validate_portfolio_company(conn, firm_id: int, company_name: str,
+                               **kwargs) -> Tuple[bool, str, Dict]:
+    """
+    Quality gate for portfolio companies. Same pattern as validate_deal().
+
+    Returns:
+        (accepted: bool, reason: str, cleaned_data: dict)
+    """
+    source_type = kwargs.get("source_type", "firm_website")
+
+    # 1. Empty / too short / too long
+    if not company_name or len(company_name.strip()) < 2:
+        _log_rejection(conn, company_name, "bad_name_empty", source_type, data_type='portfolio')
+        return False, "empty_name", {}
+    company_name = company_name.strip()
+    if len(company_name) > 60:
+        _log_rejection(conn, company_name, "bad_name_too_long", source_type, data_type='portfolio')
+        return False, "name_too_long", {}
+
+    # 2. Junk pattern check (nav, UI, metadata, descriptions)
+    if not is_valid_portfolio_name(company_name):
+        _log_rejection(conn, company_name, "junk_pattern", source_type, data_type='portfolio')
+        return False, "junk_pattern", {}
+
+    # 3. Clean ExitsTrue/ExitsFalse suffixes (fix, don't reject)
+    cleaned_name = re.sub(r"Exits?(true|false)$", "", company_name).strip()
+    if not cleaned_name or len(cleaned_name) < 2:
+        _log_rejection(conn, company_name, "bad_name_empty_after_clean", source_type, data_type='portfolio')
+        return False, "empty_name", {}
+
+    # 4. Clean (Acquired)/(Exited) tags (fix, don't reject)
+    for tag in ['(Acquired)', '(Exited)']:
+        cleaned_name = cleaned_name.replace(tag, '').strip()
+    if not cleaned_name or len(cleaned_name) < 2:
+        _log_rejection(conn, company_name, "bad_name_empty_after_clean", source_type, data_type='portfolio')
+        return False, "empty_name", {}
+
+    # 5. Auto-reject learned patterns
+    norm = normalize_company_name(cleaned_name)
+    auto_reject = conn.execute(
+        "SELECT pattern_value FROM qc_patterns "
+        "WHERE auto_reject = 1 AND data_type = 'portfolio' AND pattern_value = ?",
+        (norm[:20],)
+    ).fetchone()
+    if auto_reject:
+        _log_rejection(conn, cleaned_name, "auto_reject_pattern", source_type, data_type='portfolio')
+        return False, "auto_reject", {}
+
+    # 6. Duplicate check (same firm_id + normalized name already exists)
+    existing = conn.execute(
+        "SELECT id FROM portfolio_companies "
+        "WHERE firm_id = ? AND company_name_normalized = ?",
+        (firm_id, norm)
+    ).fetchone()
+    if existing:
+        # Not a rejection — just skip silently (upsert will handle)
+        pass
+
+    # 7. Build cleaned_data dict
+    cleaned = {
+        "company_name": cleaned_name,
+        "company_name_normalized": norm,
+    }
+    for k in ("company_website", "description", "lead_partner", "sector", "source_url"):
+        if k in kwargs and kwargs[k] is not None:
+            cleaned[k] = kwargs[k]
+
+    return True, "accepted", cleaned
+
+
+# ── Firm Quality Gate ──────────────────────────────────────────
+
+_BAD_FIRM_NAME_PATTERNS = [
+    re.compile(r"^(and|the|a|an)\s", re.I),
+    re.compile(r"\b(Powered by|Designed by|Built by|Made by)\b", re.I),
+    re.compile(r"\b(Source|via|from)\s*:?\s*$", re.I),
+]
+
+
+def validate_firm(conn, name: str, website: str = None,
+                  portfolio_url: str = None,
+                  **kwargs) -> Tuple[bool, str, Dict]:
+    """
+    Quality gate for VC firms. Same pattern as validate_deal().
+
+    Returns:
+        (accepted: bool, reason: str, cleaned_data: dict)
+    """
+    # 1. Empty / too short
+    if not name or len(name.strip()) < 2:
+        _log_rejection(conn, name, "bad_name_empty", data_type='firm')
+        return False, "empty_name", {}
+    name = name.strip()
+
+    # 2. Junk name patterns
+    for pattern in _BAD_FIRM_NAME_PATTERNS:
+        if pattern.search(name):
+            _log_rejection(conn, name, "bad_name_pattern", data_type='firm')
+            return False, "bad_name_pattern", {}
+
+    # 3. URL format validation
+    url_re = re.compile(r"^https?://[^\s]+$")
+    if website and not url_re.match(website):
+        website = None  # drop bad URL, don't reject
+    if portfolio_url and not url_re.match(portfolio_url):
+        portfolio_url = None
+
+    # 4. Fuzzy duplicate detection
+    norm = normalize_company_name(name)
+    existing = conn.execute(
+        "SELECT id, name FROM firms WHERE name = ? OR "
+        "REPLACE(REPLACE(REPLACE(LOWER(name), ' ', ''), '.', ''), ',', '') = ?",
+        (name, norm)
+    ).fetchone()
+    if existing:
+        # Return existing firm_id in reason for caller to decide
+        return False, f"duplicate_firm:{existing['id']}:{existing['name']}", {}
+
+    # 5. Build cleaned_data dict
+    cleaned = {"name": name}
+    if website:
+        cleaned["website"] = website
+    if portfolio_url:
+        cleaned["portfolio_url"] = portfolio_url
+    for k in ("focus_stages", "focus_sectors"):
+        if k in kwargs and kwargs[k] is not None:
+            cleaned[k] = kwargs[k]
+
+    return True, "accepted", cleaned
+
+
+# ── Portfolio Audit ────────────────────────────────────────────
+
+def run_audit_portfolio(conn) -> Dict:
+    """
+    Run quality audit on all portfolio companies.
+    Returns dict of issues found, grouped by type.
+    """
+    issues = {
+        "junk_names": [],
+        "duplicates": [],
+        "too_long": [],
+        "orphans": [],
+    }
+
+    # 1. Junk names still in DB
+    for row in conn.execute("SELECT id, company_name, firm_id FROM portfolio_companies").fetchall():
+        name = row["company_name"] if isinstance(row, dict) else row[1]
+        rid = row["id"] if isinstance(row, dict) else row[0]
+        firm_id = row["firm_id"] if isinstance(row, dict) else row[2]
+        if not is_valid_portfolio_name(name):
+            issues["junk_names"].append({"id": rid, "name": name, "firm_id": firm_id})
+        elif len(name) > 60:
+            issues["too_long"].append({"id": rid, "name": name, "firm_id": firm_id})
+
+    # 2. Duplicates within the same firm
+    rows = conn.execute("""
+        SELECT firm_id, company_name_normalized, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
+        FROM portfolio_companies
+        WHERE company_name_normalized IS NOT NULL AND company_name_normalized != ''
+        GROUP BY firm_id, company_name_normalized
+        HAVING COUNT(*) > 1
+    """).fetchall()
+    for r in rows:
+        issues["duplicates"].append({
+            "firm_id": r[0], "normalized": r[1],
+            "ids": r[2].split(","), "count": r[3],
+        })
+
+    # 3. Orphans (firm_id references non-existent firm)
+    orphans = conn.execute("""
+        SELECT pc.id, pc.company_name, pc.firm_id
+        FROM portfolio_companies pc
+        LEFT JOIN firms f ON pc.firm_id = f.id
+        WHERE f.id IS NULL
+    """).fetchall()
+    for r in orphans:
+        issues["orphans"].append({"id": r[0], "name": r[1], "firm_id": r[2]})
+
+    total_issues = sum(len(v) for v in issues.values())
+    total = conn.execute("SELECT COUNT(*) FROM portfolio_companies").fetchone()[0]
+
+    return {
+        "total_portfolio_companies": total,
+        "total_issues": total_issues,
+        "health_score": round(1 - (total_issues / max(total, 1)), 2),
+        "issues": issues,
+    }
+
+
+def run_audit_firms(conn) -> Dict:
+    """
+    Run quality audit on all firms.
+    Returns dict of issues found, grouped by type.
+    """
+    issues = {
+        "junk_names": [],
+        "duplicates": [],
+        "missing_website": [],
+        "orphans": [],
+    }
+
+    # 1. Junk firm names
+    for row in conn.execute("SELECT id, name, website FROM firms").fetchall():
+        name = row["name"] if isinstance(row, dict) else row[1]
+        rid = row["id"] if isinstance(row, dict) else row[0]
+        if not name or len(name.strip()) < 2:
+            issues["junk_names"].append({"id": rid, "name": name})
+        else:
+            for p in _BAD_FIRM_NAME_PATTERNS:
+                if p.search(name):
+                    issues["junk_names"].append({"id": rid, "name": name})
+                    break
+
+    # 2. Duplicate firms by normalized name
+    rows = conn.execute("""
+        SELECT REPLACE(REPLACE(REPLACE(LOWER(name), ' ', ''), '.', ''), ',', '') as norm,
+               GROUP_CONCAT(id) as ids, GROUP_CONCAT(name, '|') as names, COUNT(*) as cnt
+        FROM firms
+        GROUP BY norm
+        HAVING COUNT(*) > 1
+    """).fetchall()
+    for r in rows:
+        issues["duplicates"].append({
+            "normalized": r[0], "ids": r[1].split(","),
+            "names": r[2].split("|"), "count": r[3],
+        })
+
+    # 3. Missing website
+    for row in conn.execute(
+        "SELECT id, name FROM firms WHERE website IS NULL OR TRIM(website) = ''"
+    ).fetchall():
+        issues["missing_website"].append({"id": row[0], "name": row[1]})
+
+    # 4. Orphan firms (no deals, no portfolio companies)
+    orphans = conn.execute("""
+        SELECT f.id, f.name FROM firms f
+        LEFT JOIN deal_firms df ON f.id = df.firm_id
+        LEFT JOIN portfolio_companies pc ON f.id = pc.firm_id
+        WHERE df.firm_id IS NULL AND pc.firm_id IS NULL
+    """).fetchall()
+    for r in orphans:
+        issues["orphans"].append({"id": r[0], "name": r[1]})
+
+    total_issues = sum(len(v) for v in issues.values())
+    total = conn.execute("SELECT COUNT(*) FROM firms").fetchone()[0]
+
+    return {
+        "total_firms": total,
+        "total_issues": total_issues,
+        "health_score": round(1 - (total_issues / max(total, 1)), 2),
+        "issues": issues,
+    }
+
+
+def run_audit_all(conn) -> Dict:
+    """Run quality audit across all data types. Returns combined dict."""
+    deals = run_audit(conn)
+    portfolio = run_audit_portfolio(conn)
+    firms = run_audit_firms(conn)
+    return {
+        "deals": deals,
+        "portfolio": portfolio,
+        "firms": firms,
+    }
+
+
+# ── Cleanup Functions ──────────────────────────────────────────
+
+def clean_portfolio_companies(conn) -> int:
+    """
+    Delete/fix junk portfolio company entries.
+    Consolidates all the SQL from api_server._run_data_cleanup().
+    Returns number of entries removed/fixed.
+    """
+    from database import _normalize_name
+    pc_removed = 0
+
+    # 1. SQL-based junk conditions
+    junk_conditions = [
+        "company_name GLOB '[12][0-9][0-9][0-9]' AND LENGTH(company_name) = 4",
+        "company_name LIKE '%Founder(s)%'",
+        "company_name LIKE '%Partner Since%'",
+        "company_name LIKE '%Exit' AND LENGTH(company_name) < 30",
+        "LENGTH(company_name) > 60",
+        "company_name LIKE '%DISCLAIMER%'",
+        "company_name LIKE 'Country:%'",
+        "company_name LIKE 'CountryUS%'",
+        "company_name LIKE 'Investment Status:%'",
+        "company_name LIKE 'Entry Stage:%'",
+        "company_name LIKE 'Entry Year:%'",
+        "company_name LIKE 'Industry:%'",
+        "company_name LIKE 'Sector:%'",
+        "company_name LIKE 'Year of Investment%'",
+        "company_name LIKE '%Published on%'",
+        "company_name LIKE '%Stage RTP%'",
+        "company_name LIKE '%SectorFintech%'",
+        "company_name LIKE '%SectorAI%'",
+        "company_name LIKE '%SectorSaaS%'",
+        "company_name LIKE '%SectorE-commerce%'",
+        "company_name LIKE '%SectorAgriculture%'",
+        "company_name LIKE '%CustomerB2%' AND LENGTH(company_name) > 50",
+        "LENGTH(TRIM(company_name)) <= 1",
+        "TRIM(company_name) = ''",
+        "company_name LIKE 'Initial investment:%'",
+        "company_name LIKE '%Status:Current%'",
+        "company_name LIKE '%Status:Exited%'",
+        "company_name LIKE '%StatusCurrent%'",
+        "company_name LIKE '%StatusExited%'",
+        "company_name LIKE '%AllMedia'",
+        "company_name LIKE '%CommerceAll'",
+        "company_name LIKE '%FinTechAll'",
+        "company_name LIKE '%HealthcareAll'",
+        "company_name LIKE '%EducationAll'",
+        "company_name LIKE '%SaaSAll'",
+        "company_name LIKE '%PropTechAll'",
+        "company_name LIKE '%SocialAll'",
+        "company_name LIKE '%AllHR'",
+        "company_name LIKE '%AllPropTech'",
+        "company_name LIKE '%AllSocial'",
+        "company_name LIKE '%AllCommerce'",
+        "company_name LIKE '%AllSaaS'",
+        "company_name LIKE '%AllFinTech'",
+        "company_name LIKE '%Link opens in new tab%'",
+        "company_name LIKE 'Spotlight%' AND company_name LIKE '%:%'",
+        "company_name LIKE 'Filter%' AND LENGTH(company_name) > 10",
+        "company_name LIKE 'Austin, TX%' AND LENGTH(company_name) > 12",
+        "company_name LIKE 'Boston, MA%' AND LENGTH(company_name) > 12",
+        "company_name LIKE 'San Francisco, CA%' AND LENGTH(company_name) > 20",
+        "company_name LIKE 'Tel Aviv, Israel%' AND LENGTH(company_name) > 18",
+        "company_name LIKE 'New York, NY%' AND LENGTH(company_name) > 14",
+        "company_name LIKE 'London, UK%' AND LENGTH(company_name) > 12",
+        "company_name LIKE 'Toronto, Canada%' AND LENGTH(company_name) > 18",
+        "company_name LIKE 'Washington DC%' AND LENGTH(company_name) > 15",
+        "company_name LIKE 'NASDAQ%'",
+        "company_name LIKE 'NYSE%'",
+        "company_name LIKE '%Enterprise/Saas%'",
+        "company_name IN ('COMPANY↑','PLAY VIDEO','VIEW LEGAL DISCLOSURES','BROWSE OUR—PORTFOLIO','NVP PROMISE','ENTERPRISE WEEKLY NEWSLETTER')",
+    ]
+    for cond in junk_conditions:
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM portfolio_companies WHERE " + cond
+            ).fetchone()[0]
+            if count > 0:
+                conn.execute("DELETE FROM portfolio_companies WHERE " + cond)
+                pc_removed += count
+        except Exception:
+            pass
+
+    # 2. Nav/UI junk (exact match, case insensitive)
+    nav_junk = [
+        "GET IN TOUCH", "Go-To-Market Services", "View All", "Load More",
+        "Show More", "Learn More", "Read More", "Visit Website", "Visit Site",
+        "Contact Us", "About Us", "About", "Our Team", "Our Portfolio",
+        "Our Startups", "Our Mission", "See All", "See More",
+        "Privacy Policy", "Privacy", "Privacy Center", "Terms of Service",
+        "Cookie Policy", "Cookie Settings", "Portfolio", "Subscribe",
+        "Sign Up", "Log In", "Login", "Sign In", "Filter", "Active", "Exited",
+        "Fundraising", "Founder Services", "Investments", "Partners",
+        "Network", "AI Apps", "Cybersecurity", "Healthcare",
+        "Data, AI & Machine Learning", "Enterprise Apps & Vertical AI",
+        "Infrastructure & Developer Tools", "Commerce & Fintech",
+        "Energy & Infrastructure", "AI Infrastructure & Developer Platforms",
+        "All Companies", "All", "How We Invest", "For Investors",
+        "For Founders", "For LPs", "For LP's", "Trending topics",
+        "Disclosures", "Content", "Spotlight", "Stage", "Podcast",
+        "Careers", "Events", "Overview", "Contact", "Home", "Resources",
+        "News", "Blog", "Press", "Insights", "Featured", "Enterprise",
+        "Commerce", "Crypto", "Robotics", "Space", "Hardware", "Fintech",
+        "Loading...", "Canada",
+    ]
+    for junk_name in nav_junk:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM portfolio_companies WHERE LOWER(TRIM(company_name)) = LOWER(?)",
+            (junk_name,),
+        ).fetchone()[0]
+        if count > 0:
+            conn.execute(
+                "DELETE FROM portfolio_companies WHERE LOWER(TRIM(company_name)) = LOWER(?)",
+                (junk_name,),
+            )
+            pc_removed += count
+
+    # 3. Fix "ExitsTrue/ExitsFalse" suffixes
+    exits_rows = conn.execute(
+        "SELECT id, company_name, firm_id FROM portfolio_companies "
+        "WHERE company_name LIKE '%Exitstrue' OR company_name LIKE '%Exitsfalse'"
+    ).fetchall()
+    for r in exits_rows:
+        cleaned = re.sub(r"Exits?(true|false)$", "", r["company_name"]).strip()
+        if cleaned and len(cleaned) > 1:
+            exists = conn.execute(
+                "SELECT id FROM portfolio_companies WHERE firm_id = ? AND company_name = ?",
+                (r["firm_id"], cleaned),
+            ).fetchone()
+            if exists:
+                conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
+            else:
+                conn.execute(
+                    "UPDATE portfolio_companies SET company_name = ?, company_name_normalized = ? WHERE id = ?",
+                    (cleaned, _normalize_name(cleaned), r["id"]),
+                )
+        else:
+            conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
+        pc_removed += 1
+
+    # 4. Fix "(Acquired)" and "(Exited)" tags
+    for tag in ['(Acquired)', '(Exited)']:
+        tag_rows = conn.execute(
+            "SELECT id, company_name, firm_id FROM portfolio_companies WHERE company_name LIKE ?",
+            (f'%{tag}%',),
+        ).fetchall()
+        for r in tag_rows:
+            cleaned = r["company_name"].replace(tag, '').strip()
+            if cleaned and len(cleaned) > 1:
+                exists = conn.execute(
+                    "SELECT id FROM portfolio_companies WHERE firm_id = ? AND company_name = ? AND id != ?",
+                    (r["firm_id"], cleaned, r["id"]),
+                ).fetchone()
+                if exists:
+                    conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
+                else:
+                    conn.execute(
+                        "UPDATE portfolio_companies SET company_name = ?, company_name_normalized = ? WHERE id = ?",
+                        (cleaned, _normalize_name(cleaned), r["id"]),
+                    )
+            pc_removed += 1
+
+    # 5. Delete description-like entries
+    desc_rows = conn.execute(
+        "SELECT id, company_name FROM portfolio_companies WHERE LENGTH(company_name) > 35"
+    ).fetchall()
+    for r in desc_rows:
+        name = r["company_name"]
+        words = name.split()
+        if len(words) >= 5 and not re.search(r'\(', name):
+            lower_words = [w for w in words[1:] if w[0].islower() or w in ('in', 'for', 'of', 'the', 'and', 'a', 'to', 'an', '&')]
+            if len(lower_words) >= len(words) - 2:
+                conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
+                pc_removed += 1
+        elif name.endswith(('Platform', 'Solution', 'Solutions')) and len(name) > 30:
+            conn.execute("DELETE FROM portfolio_companies WHERE id = ?", (r["id"],))
+            pc_removed += 1
+
+    if pc_removed:
+        conn.commit()
+        logger.info(f"Portfolio cleanup: removed/fixed {pc_removed} junk entries")
+    return pc_removed
+
+
+def clean_firms(conn) -> int:
+    """
+    Merge duplicate firms and remove orphans.
+    Returns number of entries removed/merged.
+    """
+    removed = 0
+
+    # 1. Merge duplicate firms (same normalized name)
+    dupes = conn.execute("""
+        SELECT REPLACE(REPLACE(REPLACE(LOWER(name), ' ', ''), '.', ''), ',', '') as norm,
+               GROUP_CONCAT(id) as ids, COUNT(*) as cnt
+        FROM firms
+        GROUP BY norm
+        HAVING COUNT(*) > 1
+    """).fetchall()
+    for d in dupes:
+        ids = [int(x) for x in d[1].split(",")]
+        keeper_id = ids[0]  # keep the first (oldest)
+        loser_ids = ids[1:]
+        ph = ",".join(["?"] * len(loser_ids))
+        # Re-point portfolio companies and deal links to keeper
+        conn.execute(
+            f"UPDATE portfolio_companies SET firm_id = ? WHERE firm_id IN ({ph})",
+            [keeper_id] + loser_ids,
+        )
+        conn.execute(
+            f"UPDATE OR IGNORE deal_firms SET firm_id = ? WHERE firm_id IN ({ph})",
+            [keeper_id] + loser_ids,
+        )
+        conn.execute(f"DELETE FROM deal_firms WHERE firm_id IN ({ph})", loser_ids)
+        conn.execute(f"DELETE FROM firms WHERE id IN ({ph})", loser_ids)
+        removed += len(loser_ids)
+
+    if removed:
+        conn.commit()
+        logger.info(f"Firm cleanup: merged {removed} duplicate firms")
+    return removed

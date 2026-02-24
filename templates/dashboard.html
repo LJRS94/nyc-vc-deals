@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NYC VC Deal Intelligence</title>
+  <title>VC Deal Intelligence</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -348,6 +348,7 @@
       const [qBuf, setQBuf] = useState("");
       const [stgF, setStgF] = useState("All");
       const [catF, setCatF] = useState("All");
+      const [cityF, setCityF] = useState("All");
       const [monthF, setMonthF] = useState([]);
       const [monthOpen, setMonthOpen] = useState(false);
       const monthRef = useRef(null);
@@ -536,7 +537,7 @@
       const doSort = useCallback(f => setSort(p => ({f, d: p.f===f && p.d==="desc" ? "asc" : "desc"})), []);
 
       const exportCSV = useCallback(() => {
-        const headers = ["Company","Amount","Stage","Sector","Date","Lead Investor","Source","Confidence"];
+        const headers = ["Company","Amount","Stage","Sector","City","Date","Lead Investor","Source","Confidence"];
         const csvRows = [headers.join(",")];
         rows.forEach(d => {
           csvRows.push([
@@ -544,6 +545,7 @@
             d.amount_usd||"",
             d.stage||"",
             `"${(d.category||"").replace(/"/g,'""')}"`,
+            `"${(d.city||"").replace(/"/g,'""')}"`,
             d.date_announced||"",
             `"${((d.lead_firms||[])[0]||"").replace(/"/g,'""')}"`,
             d.source_type||"",
@@ -553,7 +555,7 @@
         const blob = new Blob([csvRows.join("\n")], {type:"text/csv"});
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
-        a.href = url; a.download = `nyc_vc_deals_${new Date().toISOString().slice(0,10)}.csv`;
+        a.href = url; a.download = `vc_deals_${new Date().toISOString().slice(0,10)}.csv`;
         a.click(); URL.revokeObjectURL(url);
       }, [rows]);
 
@@ -576,14 +578,16 @@
       /* Derived data */
       const allStages = useMemo(() => [...new Set(deals.map(d=>d.stage))].filter(Boolean).sort(), [deals]);
       const allCats = useMemo(() => [...new Set(deals.map(d=>d.category))].filter(Boolean).sort(), [deals]);
+      const allCities = useMemo(() => [...new Set(deals.map(d=>d.city))].filter(Boolean).sort(), [deals]);
       const allMonths = useMemo(() => [...new Set(deals.map(d=>d.date_announced?.slice(0,7)).filter(Boolean))].sort().reverse(), [deals]);
 
       /* Filtered + sorted deals */
       const rows = useMemo(() => {
         let d = [...deals];
-        if (earlyOnly) d = d.filter(x => !x.amount_usd || x.amount_usd <= 50000000);
+        if (earlyOnly) d = d.filter(x => !x.amount_usd || x.amount_usd <= 100000000);
         if (stgF !== "All") d = d.filter(x => x.stage === stgF);
         if (catF !== "All") d = d.filter(x => x.category === catF);
+        if (cityF !== "All") d = d.filter(x => x.city === cityF);
         if (monthF.length) d = d.filter(x => monthF.some(m => (x.date_announced||"").startsWith(m)));
         if (selFirmName) d = d.filter(x => (x.firms||[]).includes(selFirmName) || (x.lead_firms||[]).includes(selFirmName));
         /* My Feed — apply user preferences as filters */
@@ -610,7 +614,7 @@
           return sort.d==="asc"?(va<vb?-1:va>vb?1:0):(va>vb?-1:va<vb?1:0);
         });
         return d;
-      }, [deals, q, stgF, catF, monthF, sort, selFirmName, earlyOnly, myFeedOn, prefs]);
+      }, [deals, q, stgF, catF, cityF, monthF, sort, selFirmName, earlyOnly, myFeedOn, prefs]);
 
       /* Firm aggregates from deals */
       const firmAgg = useMemo(() => {
@@ -647,8 +651,8 @@
         return m;
       }, [linkedPortfolio]);
       const totCap = rows.reduce((s,d) => s+(d.amount_usd||0), 0);
-      const activeF = [stgF!=="All"&&stgF, catF!=="All"&&catF, ...monthF, selFirmName, q].filter(Boolean);
-      const clearAll = () => { setStgF("All");setCatF("All");setMonthF([]);setSelFirm(null);setFirmProfile(null);setSelCat(null);setQ("");setQBuf(""); };
+      const activeF = [stgF!=="All"&&stgF, catF!=="All"&&catF, cityF!=="All"&&cityF, ...monthF, selFirmName, q].filter(Boolean);
+      const clearAll = () => { setStgF("All");setCatF("All");setCityF("All");setMonthF([]);setSelFirm(null);setFirmProfile(null);setSelCat(null);setQ("");setQBuf(""); };
       const goFirm = useCallback(n => {
         const f = firms.find(x => x.name === n);
         if (f) { setSelFirm(f.id); setView("firms"); }
@@ -667,7 +671,7 @@
           {/* Header */}
           <div className="header">
             <div className="mono" style={{fontWeight:700,fontSize:15,color:"#eee",letterSpacing:-.5,flexShrink:0}}>
-              NYC·VC <span style={{fontWeight:400,fontSize:11,color:"#444",marginLeft:6}}>Live Dashboard</span>
+              VC·Intel <span style={{fontWeight:400,fontSize:11,color:"#444",marginLeft:6}}>Live Dashboard</span>
             </div>
             <div style={{flex:1,maxWidth:400,position:"relative"}}>
               <input ref={inpRef} value={qBuf} onChange={e=>setQBuf(e.target.value)}
@@ -731,6 +735,13 @@
 
           {/* Filters */}
           <div className="filters">
+            {allCities.length>1 && <React.Fragment>
+              <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>City</span>
+              {["All",...allCities].map(v=>{const on=cityF===v;const c="#3b82f6";
+                return <button key={v} onClick={()=>setCityF(on&&v!=="All"?"All":v)} className={`pill ${on?"on":""}`}
+                  style={{borderColor:on?c+"55":"#1a1b2e",background:on?c+"14":"transparent",color:on?c:"#52536b"}}>{v}</button>;})}
+              <div style={{width:1,height:16,background:"#1a1b2e"}} />
+            </React.Fragment>}
             <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Stage</span>
             {["All",...allStages].map(v=>{const on=stgF===v;const c=SC[v]||"#7c3aed";
               return <button key={v} onClick={()=>setStgF(on&&v!=="All"?"All":v)} className={`pill ${on?"on":""}`}
@@ -743,7 +754,7 @@
             <div style={{width:1,height:16,background:"#1a1b2e"}} />
             <button onClick={()=>setEarlyOnly(!earlyOnly)} className={`pill ${earlyOnly?"on":""}`}
               style={{borderColor:earlyOnly?"#22c55e55":"#1a1b2e",background:earlyOnly?"#22c55e14":"transparent",color:earlyOnly?"#22c55e":"#52536b",fontWeight:earlyOnly?700:500}}>
-              {earlyOnly ? "Early Stage ≤$50M" : "All Stages"}
+              {earlyOnly ? "Early Stage ≤$100M" : "All Stages"}
             </button>
             <div style={{width:1,height:16,background:"#1a1b2e"}} />
             <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Month</span>
@@ -796,6 +807,7 @@
                   <SH field="amount_usd" align="right">Amount</SH>
                   <SH field="stage">Stage</SH>
                   <SH field="category">Sector</SH>
+                  {allCities.length>1 && <SH field="city">City</SH>}
                   <SH field="date_announced">Date</SH>
                   <SH field="firms">Investors</SH>
                   <SH field="confidence_score" align="right">Conf</SH>
@@ -818,6 +830,7 @@
                         <td style={{textAlign:"right"}} className="mono green" ><b>{$(d.amount_usd)}</b></td>
                         <td><Badge t={d.stage} c={SC[d.stage]} /></td>
                         <td><button className="link" onClick={e=>{e.stopPropagation();setCatF(catF===d.category?"All":d.category)}} style={{color:CC[d.category],fontSize:11.5,fontWeight:500}}>{d.category}</button></td>
+                        {allCities.length>1 && <td><button className="link" onClick={e=>{e.stopPropagation();setCityF(cityF===d.city?"All":d.city)}} style={{color:"#3b82f6",fontSize:11,fontWeight:500}}>{d.city||"—"}</button></td>}
                         <td className="mono muted" style={{fontSize:11}}>{(d.date_announced||"").slice(5)}</td>
                         <td>{(()=>{const leadPartner=(d.investors||[]).find(p=>(d.lead_firms||[]).includes(p.firm));
                           const allFirms=d.firms||[];
@@ -836,7 +849,7 @@
                           })()}</td>
                         <td style={{textAlign:"center",fontSize:11}} title={SRCS[d.source_type]}>{srcIcon(d.source_type)}</td>
                       </tr>
-                      {exp && <tr><td colSpan={user?9:8} className="expand-row"><div className="fu" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:24,fontSize:11.5}}>
+                      {exp && <tr><td colSpan={user?(allCities.length>1?10:9):(allCities.length>1?9:8)} className="expand-row"><div className="fu" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:24,fontSize:11.5}}>
                         <div><div className="kpi-label" style={{marginBottom:5}}>Overview</div>
                           <div style={{color:"#999",lineHeight:1.6}}>{d.description}</div>
                           {d.founders && <div style={{marginTop:6,color:"#777"}}>Founded by <span style={{color:"#bbb"}}>{d.founders}</span></div>}</div>

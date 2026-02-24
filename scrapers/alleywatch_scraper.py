@@ -576,6 +576,7 @@ def insert_parsed_deal(conn, deal: Dict) -> Optional[int]:
         raw_text=raw_text,
         source_url=deal.get("source_url"),
         category_id=category_id,
+        city="New York",
     )
 
     if not accepted:

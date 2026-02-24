@@ -75,7 +75,7 @@ def init_db(db_path: str = DB_PATH):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         website TEXT,
-        location TEXT DEFAULT 'New York, NY',
+        location TEXT,
         description TEXT,
         aum_range TEXT,
         focus_stages TEXT,  -- JSON array: ["Pre-Seed","Seed","Series A","Series B"]
@@ -320,9 +320,19 @@ def init_db(db_path: str = DB_PATH):
         conn.commit()
         logger.info(f"Migrated investors: added name_normalized, backfilled {len(rows)} rows")
 
+    # Migrate deals: add city column if missing
+    deal_cols = {r[1] for r in conn.execute("PRAGMA table_info(deals)").fetchall()}
+    if "city" not in deal_cols:
+        conn.execute("ALTER TABLE deals ADD COLUMN city TEXT DEFAULT 'New York'")
+        conn.execute("UPDATE deals SET city = 'New York' WHERE city IS NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_deals_city ON deals(city)")
+        conn.commit()
+        logger.info("Migrated deals: added city column, backfilled as 'New York'")
+
     # Add missing indexes for common joins
     conn.execute("CREATE INDEX IF NOT EXISTS idx_deals_lead_investor ON deals(lead_investor_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_investors_firm ON investors(firm_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deals_city ON deals(city)")
     conn.commit()
 
     # Ensure index exists (covers both fresh DBs and migrated ones)
@@ -450,7 +460,7 @@ _DEALS_COLUMNS = {
     "company_website", "company_description", "stage", "amount_usd",
     "amount_disclosed", "date_announced", "date_closed", "lead_investor_id",
     "category_id", "subcategory", "source_url", "source_type",
-    "company_name_normalized", "raw_text", "confidence_score",
+    "company_name_normalized", "raw_text", "confidence_score", "city",
 }
 _PORTFOLIO_COLUMNS = {
     "company_website", "description", "lead_partner", "sector", "source_url",
