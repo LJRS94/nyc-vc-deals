@@ -710,15 +710,100 @@ def is_valid_portfolio_name(name: str) -> bool:
         return False
     if _JUNK_CONTENT_RE.search(name):
         return False
+
+    name_lower = name.lower()
+
+    # ── Exit/acquisition status labels (not company names) ──
+    # "Acquired by X", "Exited to X", "IPOVentures", "AcquiredStudio"
+    # Protect real companies like "Acquire.com", "Acquire", "Acquired.io"
+    if re.match(r'^Acquired\s+by\s', name):
+        return False
+    if re.match(r'^Exited(\s+to\s|\s+Investments$)', name):
+        return False
+    if re.match(r'^(Acquired|IPO)[A-Z][a-z]', name) and len(name) < 25:
+        return False
+    if name == "Acquired":
+        return False
+
+    # ── Filter/UI state artifacts ──
+    # "NYCALLother-falseConsumerALL", "Bay AreaALLother-false..."
+    if 'other-' in name_lower:
+        return False
+    if re.search(r'[a-z]ALL[A-Z]|[A-Z]ALL[a-z]|ALL$', name) and len(name) > 10:
+        return False
+
+    # ── Country/geography filter labels ──
+    if re.match(r'^Country[A-Z]', name):
+        return False
+
+    # ── Single category/sector words (not company names) ──
+    _SINGLE_CATEGORY_WORDS = {
+        'ai', 'biotech', 'food', 'saas', 'fintech', 'healthcare', 'edtech',
+        'cleantech', 'proptech', 'insurtech', 'crypto', 'web3', 'gaming',
+        'media', 'commerce', 'ecommerce', 'logistics', 'robotics', 'defense',
+        'energy', 'agriculture', 'education', 'legal', 'sports', 'entertainment',
+        'climate', 'security', 'infrastructure', 'data', 'platform', 'marketplace',
+        'software', 'hardware', 'social', 'travel', 'fitness', 'beauty', 'fashion',
+        'music', 'b2b', 'b2c', 'consumer', 'enterprise', 'current', 'explore',
+    }
+    if name_lower in _SINGLE_CATEGORY_WORDS:
+        return False
+
+    # ── Single geography words ──
+    _GEO_ONLY = {'bay area', 'new york', 'san francisco', 'los angeles', 'boston',
+                 'austin', 'seattle', 'london', 'global'}
+    if name_lower in _GEO_ONLY:
+        return False
+
+    # ── Meta/nav text about the portfolio itself ──
+    if re.match(r'^(Select investments|Showing results|Showcasing |View (Research|Portfolio|All)|'
+                r'Click here|Explore Our|MetaProp Portfolio|Hypothesis Portfolio|'
+                r'Launched in |Simple consumer |Current$)', name, re.I):
+        return False
+
+    # ── Concatenated multi-stage labels ──
+    if re.search(r'(Pre-Seed|Series [A-Ea-e]|Seed)(Pre-Seed|Series [A-Ea-e]|Seed|IPO)', name):
+        return False
+    if re.match(r'^Initial Investment', name):
+        return False
+
+    # ── Concatenated multi-category (3+ sectors mashed together) ──
+    _SECTOR_TOKENS_FOR_CONCAT = ['AI', 'SaaS', 'Fintech', 'Healthcare', 'Commerce',
+                                  'Security', 'Industrials', 'Digital', 'Infra']
+    if sum(1 for s in _SECTOR_TOKENS_FOR_CONCAT if s in name) >= 3 and len(name) > 20:
+        return False
+
+    # ── Strategy + category concatenations (StrategySoftware, StrategySustainability) ──
+    if re.match(r'^Strategy[A-Z]', name):
+        return False
+
+    # ── "Founders' X Portfolio" meta text ──
+    if re.search(r"Founders'.*Portfolio|Portfolio Companies$", name):
+        return False
+
     # Sentence-like patterns (descriptions scraped as names)
-    if len(name) > 40 and any(w in name.lower() for w in
+    if len(name) > 40 and any(w in name_lower for w in
             [" is a ", " is an ", " provides ", " delivers ", " develops ",
              " offers ", " enables ", " builds ", " allows ", " revolutionizes ",
              " partnering ", " dedicated to ", " bringing ", " powered by "]):
         return False
+
+    # Description-like sentences (5+ words with mostly lowercase, > 35 chars)
+    if len(name) > 35:
+        words = name.split()
+        if len(words) >= 5:
+            lower_words = [w for w in words[1:] if w[0:1].islower() or w in (
+                'in', 'for', 'of', 'the', 'and', 'a', 'to', 'an', '&')]
+            if len(lower_words) >= len(words) - 2:
+                return False
+
     # Description-like prefix
-    if re.match(r"^(AI-powered|An? investment|A specialty|An? AI|A platform|The leading|An? \w+ that)", name, re.I):
+    if re.match(r"^(AI-powered|AI-Native|An? investment|A specialty|An? AI|A platform|The leading|An? \w+ that)", name, re.I):
         return False
+    # Long description ending in generic words
+    if len(name) > 30 and re.search(r'\s+(Platform|Solution|Solutions|Automation|Optimization|Apps)$', name):
+        return False
+
     # Concatenated metadata
     if re.search(r"(Consumer|Media|Health|Finance|Software|Education|Marketplace)\d{4}$", name):
         return False
@@ -746,6 +831,37 @@ def is_valid_portfolio_name(name: str) -> bool:
         return False
     if re.match(r'^Filter', name) and len(name) > 10:
         return False
+
+    # ── Firm name + stage (e.g. "Social Starts Series A") ──
+    if re.search(r'\s+Series [A-E]$', name) and len(name) > 15:
+        # Check if it's just "firm name + Series X" by seeing if removing the stage
+        # leaves something very short or looks like a firm name
+        base_name = re.sub(r'\s+Series [A-E]$', '', name)
+        if len(base_name) < 5:
+            return False
+
+    # ── Long text with sentence markers ──
+    if len(name) > 20 and re.search(r'Together\.|Startups,', name):
+        return False
+
+    # ── Long sentence-like names with "for" / "of" / "and" (descriptions) ──
+    if len(name) > 30 and re.search(r'\b(for|of)\b.*\b(for|of)\b', name_lower):
+        return False
+    if len(name) > 35 and re.match(r'^[A-Z]', name) and re.search(r'\bfor\s+[A-Z]', name):
+        # "AI System of Record for In-House Legal Teams" pattern
+        words = name.split()
+        if len(words) >= 5:
+            return False
+
+    # ── Firm name + stage suffix ──
+    if re.search(r'\s+Series [A-E]$', name):
+        # Real portfolio names don't normally end with just "Series X"
+        # Companies like "Series" exist but not "Foo Series A"
+        base_name = re.sub(r'\s+Series [A-E]$', '', name)
+        # If there are 2+ words before "Series X", likely junk
+        if len(base_name.split()) >= 2:
+            return False
+
     return True
 
 
