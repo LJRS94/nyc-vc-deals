@@ -420,9 +420,10 @@ def _generate_notifications(conn):
 
 
 def _run_scrape_background(days_back: int = 30):
-    """Run a scrape in a background thread."""
+    """Run a deal scrape, then auto-queue portfolio scrape after completion."""
     if not _scrape_lock.acquire(blocking=False):
         return  # already running
+    _queue_portfolio = False
     try:
         _scrape_status["running"] = True
         _scrape_status["last_run"] = datetime.now().isoformat()
@@ -535,13 +536,20 @@ def _run_scrape_background(days_back: int = 30):
 
         _scrape_status["last_result"] = f"Completed. {deal_count} total deals."
         logger.info(f"Background scrape complete: {deal_count} deals")
+        _queue_portfolio = True
 
     except Exception as e:
         _scrape_status["last_result"] = f"Error: {e}"
         logger.error(f"Background scrape failed: {e}")
+        _queue_portfolio = False
     finally:
         _scrape_status["running"] = False
         _scrape_lock.release()
+
+    # Auto-queue portfolio scrape after deals complete (runs sequentially)
+    if _queue_portfolio:
+        logger.info("Auto-queuing portfolio scrape after deal scrape...")
+        threading.Thread(target=_run_portfolio_scrape, daemon=True).start()
 
 
 def _run_portfolio_scrape():
@@ -667,9 +675,8 @@ def _start_scheduler():
             _run_scrape_background()
 
     def portfolio_scheduler():
-        time.sleep(STARTUP_PORTFOLIO_DELAY)
-        _run_portfolio_scrape()
-
+        # No startup run — the startup deal scrape auto-queues portfolio.
+        # Only schedule the weekly standalone Friday run.
         while True:
             now = datetime.utcnow()
             days_until_saturday = (5 - now.weekday()) % 7
@@ -688,7 +695,7 @@ def _start_scheduler():
     t1.start()
     t2 = threading.Thread(target=portfolio_scheduler, daemon=True)
     t2.start()
-    logger.info("Scheduled: deals (startup + Sunday 9 PM EST), portfolio (startup + Friday 9 PM EST)")
+    logger.info("Scheduled: deals (startup + Sunday 9 PM EST, auto-queues portfolio), portfolio (Friday 9 PM EST)")
 
 
 @app.route("/api/scrape", methods=["POST"])
