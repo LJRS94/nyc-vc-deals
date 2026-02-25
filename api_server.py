@@ -303,7 +303,6 @@ def api_mark_notifications_read():
 # ── Background Scraping ──────────────────────────────────────
 
 _scrape_lock = threading.Lock()
-_scrape_file_lock_fd = None  # cross-process file lock for scrapes
 _scrape_status = {"running": False, "last_run": None, "last_result": None}
 _scheduler_lock_fd = None  # held open to maintain file lock
 
@@ -423,22 +422,7 @@ def _generate_notifications(conn):
 def _run_scrape_background(days_back: int = 30):
     """Run a deal scrape, then auto-queue portfolio scrape after completion."""
     if not _scrape_lock.acquire(blocking=False):
-        return  # already running in this process
-
-    # Cross-process file lock — prevents multiple gunicorn workers from scraping simultaneously
-    import fcntl
-    global _scrape_file_lock_fd
-    _scrape_lock_path = os.path.normpath(os.path.join(
-        os.environ.get("DATABASE_PATH", ""), "..", ".scrape.lock"
-    )) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_scrape.lock"
-    try:
-        _scrape_file_lock_fd = open(_scrape_lock_path, "w")
-        fcntl.flock(_scrape_file_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (IOError, OSError):
-        logger.info("Another worker is already scraping — skipping")
-        _scrape_lock.release()
-        return
-
+        return  # already running
     _queue_portfolio = False
     try:
         _scrape_status["running"] = True
@@ -560,15 +544,6 @@ def _run_scrape_background(days_back: int = 30):
         _queue_portfolio = False
     finally:
         _scrape_status["running"] = False
-        # Release file lock so other workers can scrape
-        if _scrape_file_lock_fd:
-            try:
-                import fcntl
-                fcntl.flock(_scrape_file_lock_fd, fcntl.LOCK_UN)
-                _scrape_file_lock_fd.close()
-            except Exception:
-                pass
-            _scrape_file_lock_fd = None
         _scrape_lock.release()
 
     # Auto-queue portfolio scrape after deals complete (runs sequentially)
@@ -581,21 +556,6 @@ def _run_portfolio_scrape():
     """Run portfolio scraper in a background thread."""
     if not _scrape_lock.acquire(blocking=False):
         return
-
-    # Cross-process file lock
-    import fcntl
-    global _scrape_file_lock_fd
-    _scrape_lock_path = os.path.normpath(os.path.join(
-        os.environ.get("DATABASE_PATH", ""), "..", ".scrape.lock"
-    )) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_scrape.lock"
-    try:
-        _scrape_file_lock_fd = open(_scrape_lock_path, "w")
-        fcntl.flock(_scrape_file_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (IOError, OSError):
-        logger.info("Another worker is already scraping — skipping portfolio")
-        _scrape_lock.release()
-        return
-
     try:
         _scrape_status["running"] = True
         _scrape_status["last_run"] = datetime.now().isoformat()
@@ -672,14 +632,6 @@ def _run_portfolio_scrape():
         logger.error(f"Portfolio scrape failed: {e}")
     finally:
         _scrape_status["running"] = False
-        if _scrape_file_lock_fd:
-            try:
-                import fcntl
-                fcntl.flock(_scrape_file_lock_fd, fcntl.LOCK_UN)
-                _scrape_file_lock_fd.close()
-            except Exception:
-                pass
-            _scrape_file_lock_fd = None
         _scrape_lock.release()
 
 
@@ -897,19 +849,9 @@ def _run_data_cleanup():
 
 
 # Start the scheduler when running under gunicorn (production)
+# Using --workers 1 so no cross-process contention with SQLite
 if not os.environ.get("FLASK_DEBUG"):
-    # Use file lock so only ONE gunicorn worker runs cleanup (avoids SQLite write contention)
-    import fcntl as _fcntl
-    _cleanup_lock_path = os.path.normpath(os.path.join(
-        os.environ.get("DATABASE_PATH", ""), "..", ".cleanup.lock"
-    )) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_cleanup.lock"
-    try:
-        _cleanup_lock_fd = open(_cleanup_lock_path, "w")
-        _fcntl.flock(_cleanup_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        _run_data_cleanup()
-        _cleanup_lock_fd.close()
-    except (IOError, OSError):
-        logger.info("Another worker owns the cleanup lock — skipping")
+    _run_data_cleanup()
     _start_scheduler()
 
 
