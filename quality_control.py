@@ -1718,6 +1718,18 @@ def clean_investors(conn) -> Dict:
         if title and "&amp;" in title:
             updates["title"] = title.replace("&amp;", "&")
 
+        # Fix name: strip concatenated title from name field
+        # e.g. "Alexi BakerDirector" -> "Alexi Baker", "Anna BansalAnalyst" -> "Anna Bansal"
+        n = updates.get("name", name)
+        title_in_name = re.search(
+            r'([A-Z][a-z]+)((?:Managing |General |Operating |Venture |Senior |Investment )?'
+            r'(?:Partner|Director|Principal|Associate|Analyst|Founder|Co-Founder|VP)\b.*)', n)
+        if title_in_name and len(title_in_name.group(1)) >= 2:
+            updates["name"] = n[:title_in_name.start(2)].strip()
+            # Move the extracted title to the title field if no title exists
+            if not (updates.get("title", title)):
+                updates["title"] = title_in_name.group(2).strip()
+
         # Fix title: strip person name prefix (name concatenated into title)
         t = updates.get("title", title)
         n = updates.get("name", name)
@@ -1727,6 +1739,15 @@ def clean_investors(conn) -> Dict:
             if cleaned_title.startswith(n):
                 cleaned_title = cleaned_title[len(n):].strip()
             updates["title"] = cleaned_title or None
+
+        # Fix title: strip person name SUFFIX (e.g. "Managing PartnerBob Greene")
+        t = updates.get("title", title)
+        n = updates.get("name", name)
+        if t and n and t.endswith(n):
+            updates["title"] = t[:-len(n)].strip() or None
+        elif t and n and n in t and len(n) > 5:
+            # Name appears in the middle of a bio-title — strip it
+            updates["title"] = t.replace(n, '').strip()
 
         # Fix title: strip "ExperienceEducation" suffix
         t = updates.get("title", title)
@@ -1738,13 +1759,23 @@ def clean_investors(conn) -> Dict:
         if t and "Bio & More" in t:
             updates["title"] = re.sub(r'Bio & More.*$', '', t).strip() or None
 
+        # Fix title: handle bios that START with "is a/an" (no name prefix)
+        # e.g. "is an Associate at nvp capital, where he..."
+        t = updates.get("title", title)
+        if t and re.match(r'^is (?:a |an |the |Co-)', t, re.I):
+            m = re.match(r'^is (?:a |an |the |Co-Founder)?\s*(.*?)(?:\s+at\s+|\s+of\s+|\s*,\s*where|\s*\.\s*)', t)
+            if m:
+                updates["title"] = m.group(1).strip() or None
+            else:
+                updates["title"] = None
+
         # Fix title: truncate bio paragraphs (keep first title-like phrase)
         t = updates.get("title", title)
         if t and len(t) > 100:
             # Extract just the title part before bio text
-            m = re.match(r'^((?:Managing |General |Operating |Venture |Founding )?'
-                         r'(?:Partner|Director|Principal|Associate|VP|Founder|Co-Founder)'
-                         r'(?:[,\s]+\w+)*?)(?:[A-Z][a-z]+ (?:is |was |has |joined ))', t)
+            m = re.match(r'^((?:Managing |General |Operating |Venture |Founding |Investment |Senior )?'
+                         r'(?:Partner|Director|Principal|Associate|VP|Founder|Co-Founder|Analyst)'
+                         r'(?:[,\s]+[\w&]+)*?)(?:\s*[A-Z][a-z]+ (?:is |was |has |joined ))', t)
             if m:
                 updates["title"] = m.group(1).strip()
             else:
@@ -1752,6 +1783,13 @@ def clean_investors(conn) -> Dict:
                 short = re.split(r'[.;]|\b(?:is a |was |has been |joined )', t)[0].strip()
                 if len(short) < len(t) and len(short) > 3:
                     updates["title"] = short
+
+        # Fix title: strip location suffix (e.g. "Partner, People & TalentNew York")
+        t = updates.get("title", title)
+        if t:
+            t = re.sub(r'(?:New York|San Francisco|Boston|London|Menlo Park|Palo Alto)\s*$', '', t).strip()
+            if t != (updates.get("title", title)):
+                updates["title"] = t or None
 
         # Recalculate normalized name if name changed
         if "name" in updates:
@@ -1767,10 +1805,11 @@ def clean_investors(conn) -> Dict:
 
     # 1. Delete obvious junk entries (nav text, section headings, non-person names)
     _JUNK_INVESTOR_NAMES = re.compile(
-        r"^(What We Do|Our Values|Our Focus|How We Help|Our Startups|Our Blog|"
-        r"We Invest In|Our Network|Founder Catalyst|Startup Weekend|"
-        r"Meet Our |Our Model|Program Tracks|No Results|Privacy|"
-        r"Our Advisors|Our Culture|connect$|Info$|Industries$)",
+        r"^(What We|Our Values|Our Focus|How We|Our Startups|Our Blog|"
+        r"We Invest|We Are|Our Network|Founder Catalyst|Startup Weekend|"
+        r"Meet Our|Our Model|Program Tracks|No Results|Privacy|"
+        r"Our Advisors|Our Culture|View Bio|Partners$|"
+        r"connect$|Info$|Industries$|Kauffman Fellows)",
         re.I,
     )
     junk_rows = conn.execute("SELECT id, name FROM investors").fetchall()
