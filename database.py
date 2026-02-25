@@ -37,11 +37,11 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
             return conn
         except (sqlite3.ProgrammingError, sqlite3.OperationalError):
             pass  # connection was closed, create new one
-    conn = sqlite3.connect(db_path, timeout=60)
+    conn = sqlite3.connect(db_path, timeout=300)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=60000")
+    conn.execute("PRAGMA busy_timeout=300000")
     setattr(_local, key, conn)
     return conn
 
