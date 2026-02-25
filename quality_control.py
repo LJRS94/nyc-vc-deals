@@ -1300,6 +1300,10 @@ def clean_portfolio_companies(conn) -> int:
             )
             pc_removed += count
 
+    # Commit after junk removal to release write lock
+    if pc_removed:
+        conn.commit()
+
     # 2b. Fix junk websites: "#close" (Bessemer), firm's own domain, bare domains
     # Bessemer: all websites are "#close" (modal close button scrape artifact)
     conn.execute(
@@ -1371,6 +1375,9 @@ def clean_portfolio_companies(conn) -> int:
                 )
             pc_removed += 1
 
+    # Commit website + boolean fixes
+    conn.commit()
+
     # 2d. Fix junk descriptions
     # SignalFire: "Exit" as description (status label, not description)
     conn.execute(
@@ -1406,6 +1413,9 @@ def clean_portfolio_companies(conn) -> int:
             "UPDATE portfolio_companies SET company_name_normalized = ? WHERE id = ?",
             (_normalize_name(r["company_name"]), r["id"]),
         )
+
+    # Commit description/sector/lead_partner/normalized name fixes
+    conn.commit()
 
     # 3. Fix "ExitsTrue/ExitsFalse" suffixes
     exits_rows = conn.execute(
@@ -1811,6 +1821,10 @@ def clean_investors(conn) -> Dict:
                 list(updates.values()) + [r["id"]],
             )
             stats["fixed"] += 1
+
+    # Commit after batch fixes to release write lock
+    if stats["fixed"]:
+        conn.commit()
 
     # 1. Delete obvious junk entries (nav text, section headings, non-person names)
     _JUNK_INVESTOR_NAMES = re.compile(
