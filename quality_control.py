@@ -1779,10 +1779,19 @@ def clean_investors(conn) -> Dict:
             if m:
                 updates["title"] = m.group(1).strip()
             else:
-                # Just take first sentence/clause
-                short = re.split(r'[.;]|\b(?:is a |was |has been |joined )', t)[0].strip()
-                if len(short) < len(t) and len(short) > 3:
-                    updates["title"] = short
+                # Look for a name-like phrase followed by bio text
+                m2 = re.match(r"^([\w\s,&'-]+?)(?:'s (?:career|experience|work|background)|"
+                              r"has (?:been|spent|served|worked)|"
+                              r"(?:is |was |joined |leads? |manages? |focuses? ))", t)
+                if m2 and len(m2.group(1).strip()) < 80:
+                    updates["title"] = None  # Bio with no clear title — drop it
+                else:
+                    # Just take first sentence/clause
+                    short = re.split(r'[.;]|\b(?:is a |was |has been |joined )', t)[0].strip()
+                    if len(short) < len(t) and len(short) > 3:
+                        updates["title"] = short
+                    else:
+                        updates["title"] = None  # Can't extract — drop rather than keep bio
 
         # Fix title: strip location suffix (e.g. "Partner, People & TalentNew York")
         t = updates.get("title", title)
@@ -1808,10 +1817,15 @@ def clean_investors(conn) -> Dict:
         r"^(What We|Our Values|Our Focus|How We|Our Startups|Our Blog|"
         r"We Invest|We Are|Our Network|Founder Catalyst|Startup Weekend|"
         r"Meet Our|Our Model|Program Tracks|No Results|Privacy|"
-        r"Our Advisors|Our Culture|View Bio|Partners$|"
+        r"Our Advisors|Our Culture|View Bio|"
         r"connect$|Info$|Industries$|Kauffman Fellows)",
         re.I,
     )
+    # Also check for firm names and generic labels in investor names
+    _JUNK_EXACT_NAMES = {
+        "partners", "slow ventures", "managing partner", "vice president",
+        "partner", "general partner", "principal", "associate",
+    }
     junk_rows = conn.execute("SELECT id, name FROM investors").fetchall()
     junk_ids = []
     for r in junk_rows:
@@ -1819,6 +1833,8 @@ def clean_investors(conn) -> Dict:
         if _JUNK_INVESTOR_RE.search(name):
             junk_ids.append(r["id"])
         elif _JUNK_INVESTOR_NAMES.search(name):
+            junk_ids.append(r["id"])
+        elif name.lower().strip() in _JUNK_EXACT_NAMES:
             junk_ids.append(r["id"])
 
     if junk_ids:
