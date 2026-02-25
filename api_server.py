@@ -850,7 +850,18 @@ def _run_data_cleanup():
 
 # Start the scheduler when running under gunicorn (production)
 if not os.environ.get("FLASK_DEBUG"):
-    _run_data_cleanup()
+    # Use file lock so only ONE gunicorn worker runs cleanup (avoids SQLite write contention)
+    import fcntl as _fcntl
+    _cleanup_lock_path = os.path.normpath(os.path.join(
+        os.environ.get("DATABASE_PATH", ""), "..", ".cleanup.lock"
+    )) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_cleanup.lock"
+    try:
+        _cleanup_lock_fd = open(_cleanup_lock_path, "w")
+        _fcntl.flock(_cleanup_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        _run_data_cleanup()
+        _cleanup_lock_fd.close()
+    except (IOError, OSError):
+        logger.info("Another worker owns the cleanup lock — skipping")
     _start_scheduler()
 
 
