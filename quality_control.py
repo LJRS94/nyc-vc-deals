@@ -72,7 +72,11 @@ CREATE TABLE IF NOT EXISTS qc_patterns (
 
 def init_qc_tables(conn):
     """Create QC tables if they don't exist, and migrate schema if needed."""
-    conn.executescript(QC_SCHEMA)
+    # Use individual execute() calls instead of executescript() to avoid EXCLUSIVE lock
+    for stmt in QC_SCHEMA.strip().split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            conn.execute(stmt)
     conn.commit()
 
     # Migration: add data_type column to existing tables

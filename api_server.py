@@ -502,12 +502,8 @@ def _run_scrape_background(days_back: int = 30):
         except Exception as e:
             logger.warning(f"Cleanup warning: {e}")
 
-        # Initialize QC tables
-        try:
-            from quality_control import init_qc_tables, run_audit, update_auto_reject_patterns, merge_cross_source_duplicates
-            init_qc_tables(conn)
-        except Exception as e:
-            logger.warning(f"QC init warning: {e}")
+        # QC tables already created at startup (init_db / _run_data_cleanup)
+        from quality_control import run_audit, update_auto_reject_patterns, merge_cross_source_duplicates
 
         # Run the main scrapers (all funnel through validate_deal() quality gate)
         _scrape_status["step"] = "news_scraper"
@@ -617,8 +613,7 @@ def _run_portfolio_scrape():
 
         # Post-scrape QC: clean and audit portfolio companies
         try:
-            from quality_control import clean_portfolio_companies, run_audit_portfolio, init_qc_tables
-            init_qc_tables(conn)
+            from quality_control import clean_portfolio_companies, run_audit_portfolio
             cleaned = clean_portfolio_companies(conn)
             if cleaned:
                 logger.info(f"Portfolio post-scrape cleanup: {cleaned} entries fixed/removed")
