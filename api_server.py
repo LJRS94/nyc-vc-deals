@@ -419,10 +419,41 @@ def _generate_notifications(conn):
         logger.info(f"Generated {count} notifications")
 
 
+def _acquire_scrape_file_lock():
+    """Acquire cross-process file lock for scraping. Returns fd or None."""
+    import fcntl
+    lock_path = os.path.normpath(os.path.join(
+        os.environ.get("DATABASE_PATH", ""), "..", ".scrape.lock"
+    )) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_scrape.lock"
+    try:
+        fd = open(lock_path, "w")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except (IOError, OSError):
+        return None
+
+
+def _release_scrape_file_lock(fd):
+    """Release cross-process file lock."""
+    if fd:
+        try:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            fd.close()
+        except Exception:
+            pass
+
+
 def _run_scrape_background(days_back: int = 30):
     """Run a deal scrape, then auto-queue portfolio scrape after completion."""
     if not _scrape_lock.acquire(blocking=False):
-        return  # already running
+        return  # already running in this process
+    # Cross-process lock — only one gunicorn worker scrapes at a time
+    file_lock_fd = _acquire_scrape_file_lock()
+    if not file_lock_fd:
+        logger.info("Another worker is scraping — skipping")
+        _scrape_lock.release()
+        return
     _queue_portfolio = False
     try:
         _scrape_status["running"] = True
@@ -554,6 +585,7 @@ def _run_scrape_background(days_back: int = 30):
     finally:
         _scrape_status["running"] = False
         _scrape_status.pop("step", None)
+        _release_scrape_file_lock(file_lock_fd)
         _scrape_lock.release()
 
     # Auto-queue portfolio scrape after deals complete (runs sequentially)
@@ -565,6 +597,11 @@ def _run_scrape_background(days_back: int = 30):
 def _run_portfolio_scrape():
     """Run portfolio scraper in a background thread."""
     if not _scrape_lock.acquire(blocking=False):
+        return
+    file_lock_fd = _acquire_scrape_file_lock()
+    if not file_lock_fd:
+        logger.info("Another worker is scraping — skipping portfolio")
+        _scrape_lock.release()
         return
     try:
         _scrape_status["running"] = True
@@ -642,6 +679,7 @@ def _run_portfolio_scrape():
         logger.error(f"Portfolio scrape failed: {e}")
     finally:
         _scrape_status["running"] = False
+        _release_scrape_file_lock(file_lock_fd)
         _scrape_lock.release()
 
 
@@ -859,9 +897,21 @@ def _run_data_cleanup():
 
 
 # Start the scheduler when running under gunicorn (production)
-# Using --workers 1 so no cross-process contention with SQLite
+# File locks ensure only ONE worker runs cleanup/scheduler/scrapes (SQLite = single writer)
 if not os.environ.get("FLASK_DEBUG"):
-    _run_data_cleanup()
+    import fcntl as _fcntl
+    _cleanup_lock_path = os.path.normpath(os.path.join(
+        os.environ.get("DATABASE_PATH", ""), "..", ".cleanup.lock"
+    )) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_cleanup.lock"
+    try:
+        _cleanup_lock_fd = open(_cleanup_lock_path, "w")
+        _fcntl.flock(_cleanup_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        _run_data_cleanup()
+        # Release cleanup lock immediately so it doesn't block scrapes
+        _fcntl.flock(_cleanup_lock_fd, _fcntl.LOCK_UN)
+        _cleanup_lock_fd.close()
+    except (IOError, OSError):
+        logger.info("Another worker owns cleanup — skipping")
     _start_scheduler()
 
 
