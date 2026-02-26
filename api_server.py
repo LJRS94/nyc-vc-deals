@@ -7,8 +7,7 @@ import os
 import sys
 import threading
 import logging
-from functools import wraps
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, g, jsonify, request, send_from_directory, session
 from flask_cors import CORS
 from flask_limiter import Limiter
@@ -18,14 +17,15 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import SECRET_KEY, API_PORT, API_HOST, STARTUP_SCRAPE_DELAY, STARTUP_PORTFOLIO_DELAY
+from config import SECRET_KEY, API_PORT, API_HOST, STARTUP_SCRAPE_DELAY, STARTUP_PORTFOLIO_DELAY, CORS_ORIGINS
 from database import (
     get_connection, init_db, create_user, get_user_by_username,
     get_user_preferences, set_user_preferences,
     save_deal, unsave_deal, update_saved_deal,
     get_saved_deals, get_saved_deal_ids, get_saved_folders,
-    reset_stuck_scrape_logs, backup_db,
+    reset_stuck_scrape_logs, backup_db, vacuum_db,
 )
+from auth import login_required, admin_required
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # ── Blueprints ──
@@ -36,7 +36,8 @@ from routes.qc import qc_bp
 from routes.verified import verified_bp
 
 app = Flask(__name__)
-CORS(app)
+if CORS_ORIGINS:
+    CORS(app, origins=CORS_ORIGINS, supports_credentials=True)
 limiter = Limiter(get_remote_address, app=app, default_limits=["200 per hour"],
                   storage_uri="memory://")
 
@@ -56,6 +57,16 @@ app.config.update(
 @app.before_request
 def _open_db():
     g.db = get_connection()
+
+
+# ── CSRF protection: require custom header on state-changing requests ──
+@app.before_request
+def _csrf_check():
+    if request.method in ("POST", "PUT", "DELETE"):
+        if request.path == "/health":
+            return
+        if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+            return jsonify({"error": "Missing required X-Requested-With header"}), 403
 
 
 @app.teardown_appcontext
@@ -88,16 +99,6 @@ def internal_error(e):
 @app.errorhandler(400)
 def bad_request(e):
     return jsonify({"error": str(e)}), 400
-
-
-def login_required(f):
-    """Decorator — returns 401 if no valid session. Only for new endpoints."""
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if "user_id" not in session:
-            return jsonify({"error": "Login required"}), 401
-        return f(*args, **kwargs)
-    return wrapper
 
 
 @app.route("/health")
@@ -156,7 +157,8 @@ def auth_register():
     user = create_user(conn, username, generate_password_hash(password), display_name)
     session["user_id"] = user["id"]
     session["user_name"] = user["display_name"]
-    return jsonify({"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user["display_name"]}})
+    session["is_admin"] = bool(user.get("is_admin"))
+    return jsonify({"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user["display_name"], "is_admin": bool(user.get("is_admin"))}})
 
 
 @app.route("/auth/login", methods=["POST"])
@@ -172,7 +174,8 @@ def auth_login():
         return jsonify({"error": "Invalid username or password"}), 401
     session["user_id"] = user["id"]
     session["user_name"] = user["display_name"]
-    return jsonify({"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user["display_name"]}})
+    session["is_admin"] = bool(user.get("is_admin"))
+    return jsonify({"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user["display_name"], "is_admin": bool(user.get("is_admin"))}})
 
 
 @app.route("/auth/logout", methods=["POST"])
@@ -188,6 +191,7 @@ def api_me():
             "logged_in": True,
             "id": session["user_id"],
             "name": session.get("user_name"),
+            "is_admin": bool(session.get("is_admin")),
         })
     return jsonify({"logged_in": False})
 
@@ -461,6 +465,12 @@ def _run_scrape_background(days_back: int = 30):
         _scrape_status["step"] = "init"
         logger.info("Background scrape starting...")
 
+        # Pre-scrape backup so we can roll back if scrape corrupts data
+        try:
+            backup_db()
+        except Exception as e:
+            logger.warning(f"Pre-scrape backup warning: {e}")
+
         # Reset any stuck scrape_logs from prior crashes
         try:
             conn_reset = get_connection()
@@ -569,6 +579,12 @@ def _run_scrape_background(days_back: int = 30):
         except Exception as e:
             logger.warning(f"Database backup warning: {e}")
 
+        # Reclaim space after bulk operations
+        try:
+            vacuum_db()
+        except Exception as e:
+            logger.warning(f"Post-scrape vacuum warning: {e}")
+
         _scrape_status["last_result"] = f"Completed. {deal_count} total deals."
         logger.info(f"Background scrape complete: {deal_count} deals")
         _queue_portfolio = True
@@ -603,6 +619,12 @@ def _run_portfolio_scrape():
         _scrape_status["running"] = True
         _scrape_status["last_run"] = datetime.now().isoformat()
         logger.info("Portfolio scrape starting...")
+
+        # Pre-scrape backup
+        try:
+            backup_db()
+        except Exception as e:
+            logger.warning(f"Pre-portfolio-scrape backup warning: {e}")
 
         from scrapers.firm_scraper import seed_firms, run_portfolio_scraper
         seed_firms()
@@ -666,6 +688,12 @@ def _run_portfolio_scrape():
         except Exception as e:
             logger.warning(f"Database backup warning: {e}")
 
+        # Reclaim space after bulk operations
+        try:
+            vacuum_db()
+        except Exception as e:
+            logger.warning(f"Post-portfolio vacuum warning: {e}")
+
         _scrape_status["last_result"] = f"Portfolio scrape done. {pc_count} companies."
         logger.info(f"Portfolio scrape complete: {pc_count} companies")
 
@@ -704,7 +732,7 @@ def _start_scheduler():
         _run_scrape_background()
 
         while True:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             days_until_monday = (7 - now.weekday()) % 7
             if days_until_monday == 0 and now.hour >= 2:
                 days_until_monday = 7
@@ -721,7 +749,7 @@ def _start_scheduler():
         # No startup run — the startup deal scrape auto-queues portfolio.
         # Only schedule the weekly standalone Friday run.
         while True:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             days_until_saturday = (5 - now.weekday()) % 7
             if days_until_saturday == 0 and now.hour >= 2:
                 days_until_saturday = 7
@@ -742,7 +770,7 @@ def _start_scheduler():
 
 
 @app.route("/api/scrape", methods=["POST"])
-@login_required
+@admin_required
 @limiter.limit("2 per hour")
 def trigger_scrape():
     """Manually trigger a background scrape (requires login, rate limited)."""
@@ -755,7 +783,7 @@ def trigger_scrape():
 
 
 @app.route("/api/scrape/portfolio", methods=["POST"])
-@login_required
+@admin_required
 @limiter.limit("2 per hour")
 def trigger_portfolio_scrape():
     """Manually trigger portfolio + team scrape (requires login, rate limited)."""

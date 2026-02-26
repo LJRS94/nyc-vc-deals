@@ -111,6 +111,7 @@ def get_deals():
     }
     order_col = sort_map.get(sort_by, "d.created_at")
     order_dir = "ASC" if sort_dir.upper() == "ASC" else "DESC"
+    assert order_dir in ("ASC", "DESC")
 
     offset = (page - 1) * per_page
     data_sql = f"""

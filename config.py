@@ -16,6 +16,9 @@ DB_PATH = os.environ.get(
 # ── Server ───────────────────────────────────────────────────
 API_PORT = int(os.environ.get("PORT", 5000))
 API_HOST = "0.0.0.0"
+CORS_ORIGINS = [
+    o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()
+]
 SECRET_KEY = os.environ.get("SECRET_KEY")
 if not SECRET_KEY:
     # In production (DATABASE_PATH is set to a non-local path), require SECRET_KEY

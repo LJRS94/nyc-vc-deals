@@ -17,7 +17,7 @@ import re
 import json
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -485,7 +485,7 @@ def run_ny_dos_scraper(days_back: int = 90) -> dict:
     Returns stats dict: {found, new, skipped, errors}.
     """
     stats = {"found": 0, "new": 0, "skipped": 0, "errors": 0}
-    cutoff = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00")
 
     # SODA API query: recently formed DOMESTIC BUSINESS CORPORATIONs
     params = {

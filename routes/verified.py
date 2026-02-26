@@ -2,6 +2,7 @@
 
 from flask import Blueprint, g, jsonify, request
 
+from auth import admin_required
 from database import get_connection
 
 verified_bp = Blueprint("verified", __name__)
@@ -170,8 +171,9 @@ def get_verified():
 
 
 @verified_bp.route("/api/verified/run", methods=["POST"])
+@admin_required
 def run_verification():
-    """Re-run portfolio verification (after new portfolio scrape)."""
+    """Re-run portfolio verification (after new portfolio scrape, admin only)."""
     conn = g.db
     result = run_portfolio_verification(conn)
     return jsonify({"ok": True, **result})

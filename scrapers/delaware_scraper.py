@@ -15,7 +15,7 @@ import re
 import json
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from urllib.parse import urlencode, quote as url_quote
 
@@ -814,7 +814,7 @@ def run_delaware_scraper(days_back: int = 90):
                     WHERE id = ?
                 """, (
                     annotation,
-                    datetime.utcnow().isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                     deal_id,
                 ))
 

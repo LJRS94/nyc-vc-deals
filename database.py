@@ -10,7 +10,7 @@ import shutil
 import logging
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -342,6 +342,17 @@ def init_db(db_path: str = DB_PATH):
     )
     conn.commit()
 
+    # Migrate users: add is_admin column if missing
+    user_cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "is_admin" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+        # Auto-promote the first registered user to admin
+        first = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+        if first:
+            conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (first["id"],))
+        conn.commit()
+        logger.info("Migrated users: added is_admin column")
+
     # Initialize QC tables
     try:
         from quality_control import init_qc_tables
@@ -355,11 +366,22 @@ def init_db(db_path: str = DB_PATH):
 def backup_db(db_path: str = DB_PATH):
     """Create an atomic backup of the database using sqlite3.backup().
 
+    Rotates the previous backup to .backup.1 before writing a new .backup,
+    so there's always a fallback if the latest backup is corrupt.
     Writes to a .tmp file first, then atomically renames to .backup
     so readers never see a partial file.
     """
     backup_path = db_path + ".backup"
+    backup_prev = db_path + ".backup.1"
     tmp_path = db_path + ".backup.tmp"
+
+    # Rotate: .backup -> .backup.1
+    if os.path.exists(backup_path):
+        try:
+            os.replace(backup_path, backup_prev)
+        except OSError as e:
+            logger.warning(f"Backup rotation failed: {e}")
+
     src = sqlite3.connect(db_path, timeout=60)
     try:
         dst = sqlite3.connect(tmp_path)
@@ -373,6 +395,17 @@ def backup_db(db_path: str = DB_PATH):
             raise
     finally:
         src.close()
+
+
+def vacuum_db(db_path: str = DB_PATH):
+    """Run VACUUM to reclaim space after bulk deletes/updates."""
+    try:
+        conn = sqlite3.connect(db_path, timeout=60)
+        conn.execute("VACUUM")
+        conn.close()
+        logger.info("Database vacuumed")
+    except Exception as e:
+        logger.warning(f"VACUUM failed: {e}")
 
 
 def restore_if_empty(db_path: str = DB_PATH):
@@ -487,7 +520,7 @@ def upsert_firm(conn, name: str, **kwargs) -> int:
             sets = ", ".join(f"{k} = ?" for k in kwargs)
             conn.execute(
                 f"UPDATE firms SET {sets}, updated_at = ? WHERE id = ?",
-                (*kwargs.values(), datetime.utcnow().isoformat(), existing["id"])
+                (*kwargs.values(), datetime.now(timezone.utc).isoformat(), existing["id"])
             )
             if not _is_batch(conn):
                 conn.commit()
@@ -624,10 +657,23 @@ def upsert_portfolio_company(conn, firm_id: int, company_name: str, **kwargs) ->
 
 def create_user(conn, username: str, password_hash: str,
                 display_name: str = None) -> dict:
-    """Create a new user, return user dict."""
+    """Create a new user, return user dict.
+
+    The first user registered is auto-promoted to admin.
+    A user whose username matches the ADMIN_USERNAME env var is also promoted.
+    """
+    # Determine if this user should be admin
+    is_admin = 0
+    existing_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if existing_count == 0:
+        is_admin = 1  # first user is admin
+    admin_username = os.environ.get("ADMIN_USERNAME", "")
+    if admin_username and username == admin_username:
+        is_admin = 1
+
     cur = conn.execute(
-        "INSERT INTO users (username, password_hash, display_name) VALUES (?, ?, ?)",
-        (username, password_hash, display_name or username)
+        "INSERT INTO users (username, password_hash, display_name, is_admin) VALUES (?, ?, ?, ?)",
+        (username, password_hash, display_name or username, is_admin)
     )
     if not _is_batch(conn):
         conn.commit()
@@ -642,7 +688,7 @@ def get_user_by_username(conn, username: str) -> Optional[dict]:
     if row:
         conn.execute(
             "UPDATE users SET last_login_at = ? WHERE id = ?",
-            (datetime.utcnow().isoformat(), row["id"])
+            (datetime.now(timezone.utc).isoformat(), row["id"])
         )
         if not _is_batch(conn):
             conn.commit()
@@ -668,7 +714,7 @@ def get_user_preferences(conn, user_id: int) -> dict:
 def set_user_preferences(conn, user_id: int, prefs: dict):
     """Set multiple preferences for a user (upsert each key)."""
     import json as _json
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     for key, value in prefs.items():
         encoded = _json.dumps(value) if not isinstance(value, str) else value
         conn.execute(
@@ -785,7 +831,7 @@ def finish_scrape(conn, log_id: int, status: str, deals_found: int = 0,
            SET finished_at = ?, status = ?, deals_found = ?,
                deals_new = ?, error_message = ?
            WHERE id = ?""",
-        (datetime.utcnow().isoformat(), status, deals_found,
+        (datetime.now(timezone.utc).isoformat(), status, deals_found,
          deals_new, error_message, log_id)
     )
     if not _is_batch(conn):
@@ -800,7 +846,7 @@ def reset_stuck_scrape_logs(conn, max_age_hours: int = 2) -> int:
                error_message = 'Reset from stuck state (exceeded timeout)'
            WHERE status = 'running'
              AND datetime(started_at) < datetime('now', ?)""",
-        (datetime.utcnow().isoformat(), f"-{max_age_hours} hours")
+        (datetime.now(timezone.utc).isoformat(), f"-{max_age_hours} hours")
     ).rowcount
     if updated:
         conn.commit()
