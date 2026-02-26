@@ -898,20 +898,27 @@ def _run_data_cleanup():
 
 # Start the scheduler when running under gunicorn (production)
 # File locks ensure only ONE worker runs cleanup/scheduler/scrapes (SQLite = single writer)
+# CRITICAL: cleanup runs in background thread so it doesn't block worker startup
+# (Gunicorn kills workers that don't respond within --timeout seconds)
 if not os.environ.get("FLASK_DEBUG"):
-    import fcntl as _fcntl
-    _cleanup_lock_path = os.path.normpath(os.path.join(
-        os.environ.get("DATABASE_PATH", ""), "..", ".cleanup.lock"
-    )) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_cleanup.lock"
-    try:
-        _cleanup_lock_fd = open(_cleanup_lock_path, "w")
-        _fcntl.flock(_cleanup_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        _run_data_cleanup()
-        # Release cleanup lock immediately so it doesn't block scrapes
-        _fcntl.flock(_cleanup_lock_fd, _fcntl.LOCK_UN)
-        _cleanup_lock_fd.close()
-    except (IOError, OSError):
-        logger.info("Another worker owns cleanup — skipping")
+    def _background_cleanup():
+        import fcntl
+        lock_path = os.path.normpath(os.path.join(
+            os.environ.get("DATABASE_PATH", ""), "..", ".cleanup.lock"
+        )) if os.environ.get("DATABASE_PATH") else "/tmp/.vc_cleanup.lock"
+        try:
+            fd = open(lock_path, "w")
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            logger.info("Another worker owns cleanup — skipping")
+            return
+        try:
+            _run_data_cleanup()
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            fd.close()
+
+    threading.Thread(target=_background_cleanup, daemon=True).start()
     _start_scheduler()
 
 
