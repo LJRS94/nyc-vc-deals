@@ -427,6 +427,7 @@ def _run_scrape_background(days_back: int = 30):
     try:
         _scrape_status["running"] = True
         _scrape_status["last_run"] = datetime.now().isoformat()
+        _scrape_status["step"] = "init"
         logger.info("Background scrape starting...")
 
         # Reset any stuck scrape_logs from prior crashes
@@ -478,16 +479,20 @@ def _run_scrape_background(days_back: int = 30):
             logger.warning(f"QC init warning: {e}")
 
         # Run the main scrapers (all funnel through validate_deal() quality gate)
+        _scrape_status["step"] = "news_scraper"
         run_news_scraper(days_back=days_back)
+        _scrape_status["step"] = "alleywatch_scraper"
         run_alleywatch_scraper(days_back=days_back)
 
         # SEC EDGAR Form D filings (free public data)
+        _scrape_status["step"] = "sec_scraper"
         try:
             run_sec_scraper(days_back=days_back)
         except Exception as e:
             logger.warning(f"SEC scraper warning: {e}")
 
         # Post-scrape: cross-source dedup + QC audit
+        _scrape_status["step"] = "post_scrape_dedup"
         conn = get_connection()
 
         try:
@@ -500,11 +505,13 @@ def _run_scrape_background(days_back: int = 30):
         deal_count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
 
         # Enrich firm profiles from deal patterns
+        _scrape_status["step"] = "enrich_firms"
         try:
             _enrich_firm_profiles(conn)
         except Exception as e:
             logger.warning(f"Firm enrichment warning: {e}")
 
+        _scrape_status["step"] = "qc_audit"
         try:
             # Auto-promote frequently-rejected patterns to auto-reject
             update_auto_reject_patterns(conn)
@@ -528,6 +535,7 @@ def _run_scrape_background(days_back: int = 30):
         except Exception as e:
             logger.warning(f"Notification generation warning: {e}")
 
+        _scrape_status["step"] = "backup"
         # Backup DB after successful scrape
         try:
             backup_db()
@@ -539,11 +547,13 @@ def _run_scrape_background(days_back: int = 30):
         _queue_portfolio = True
 
     except Exception as e:
-        _scrape_status["last_result"] = f"Error: {e}"
-        logger.error(f"Background scrape failed: {e}")
+        step = _scrape_status.get("step", "unknown")
+        _scrape_status["last_result"] = f"Error at [{step}]: {e}"
+        logger.error(f"Background scrape failed at [{step}]: {e}", exc_info=True)
         _queue_portfolio = False
     finally:
         _scrape_status["running"] = False
+        _scrape_status.pop("step", None)
         _scrape_lock.release()
 
     # Auto-queue portfolio scrape after deals complete (runs sequentially)
