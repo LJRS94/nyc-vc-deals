@@ -576,7 +576,7 @@ def run_sec_scraper(days_back: int = 180):
                 if query in seen_queries:
                     continue
                 seen_queries.add(query)
-                results = search_efts(query, days_back=days_back, max_results=200)
+                results = search_efts(query, days_back=days_back, max_results=500)
                 for r in results:
                     norm = normalize_company_name(r["company_name"])
                     if norm not in seen_names:
@@ -595,7 +595,7 @@ def run_sec_scraper(days_back: int = 180):
                     continue
                 seen_queries.add(loc_q)
                 loc_results = search_efts_by_location(
-                    loc_q, days_back=days_back, max_results=200,
+                    loc_q, days_back=days_back, max_results=500,
                 )
                 for r in loc_results:
                     norm = normalize_company_name(r["company_name"])
@@ -605,8 +605,94 @@ def run_sec_scraper(days_back: int = 180):
                         r["expected_city"] = city_name
                         all_filings.append(r)
 
+        # Method C: Delaware-incorporated filings with business in enabled cities
+        # Most startups incorporate in DE even if HQ'd in NYC. This catches
+        # companies that file Form D with DE incorporation + city business address.
+        _CITY_DE_QUERIES = {
+            "New York": ['"New York, NY"', '"Brooklyn, NY"'],
+            "Boston": ['"Boston, MA"', '"Cambridge, MA"'],
+            "Washington DC": ['"Washington, DC"'],
+            "San Francisco": ['"San Francisco, CA"', '"Palo Alto, CA"'],
+        }
+
+        for city_cfg in get_enabled_cities():
+            city_name = city_cfg["display_name"]
+            de_loc_queries = _CITY_DE_QUERIES.get(city_name, [])
+            for loc_q in de_loc_queries:
+                de_query = f'"Delaware" {loc_q}'
+                if de_query in seen_queries:
+                    continue
+                seen_queries.add(de_query)
+                try:
+                    url = "https://efts.sec.gov/LATEST/search-index"
+                    start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+                    end_date = datetime.now().strftime("%Y-%m-%d")
+                    offset = 0
+                    page_size = 100
+                    max_de = 500
+
+                    while offset < max_de:
+                        params = {
+                            "q": de_query,
+                            "forms": "D,D/A",
+                            "dateRange": "custom",
+                            "startdt": start_date,
+                            "enddt": end_date,
+                            "from": offset,
+                            "size": min(page_size, max_de - offset),
+                        }
+                        resp = fetch(url, headers=SEC_HEADERS, params=params, timeout=30)
+                        if resp.status_code != 200:
+                            break
+                        ct = resp.headers.get("content-type", "")
+                        if "json" not in ct:
+                            break
+
+                        data = resp.json()
+                        hits = data.get("hits", {}).get("hits", [])
+                        total = data.get("hits", {}).get("total", {})
+                        total_count = total.get("value", 0) if isinstance(total, dict) else total
+
+                        for hit in hits:
+                            src = hit.get("_source", {})
+                            display_names = src.get("display_names", [])
+                            name = display_names[0] if display_names else "Unknown"
+                            ciks = src.get("ciks", [])
+                            cik = ciks[0].lstrip("0") if ciks else None
+                            inc_states = src.get("inc_states", [])
+
+                            # Only keep if actually DE-incorporated
+                            if inc_states and "DE" not in inc_states:
+                                continue
+
+                            norm = normalize_company_name(name)
+                            if norm not in seen_names:
+                                seen_names.add(norm)
+                                all_filings.append({
+                                    "company_name": name,
+                                    "filing_date": src.get("file_date"),
+                                    "accession_number": src.get("adsh"),
+                                    "cik": cik,
+                                    "biz_locations": src.get("biz_locations", []),
+                                    "biz_states": src.get("biz_states", []),
+                                    "source_method": "efts_de",
+                                    "expected_city": city_name,
+                                })
+
+                        logger.info(
+                            f"EFTS DE+{loc_q}: {len(hits)} hits "
+                            f"(offset {offset}, total {total_count})"
+                        )
+                        if len(hits) < page_size or offset + page_size >= total_count:
+                            break
+                        offset += page_size
+                        time.sleep(0.5)
+
+                except Exception as e:
+                    logger.warning(f"EFTS DE+{loc_q} search failed: {e}")
+
         total_found = len(all_filings)
-        logger.info(f"Total unique filings: {total_found}")
+        logger.info(f"Total unique filings (incl. DE-incorporated): {total_found}")
 
         # Enrich with XML details (batch with rate limiting)
         enriched = []

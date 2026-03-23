@@ -53,10 +53,12 @@ def run_full_scrape(days_back=SCRAPE_DEFAULT_DAYS_BACK):
     start = time.time()
     errors = []
 
+    # SEC EDGAR is the primary source — runs with extended lookback
+    # and includes Delaware-incorporated filings
     scrapers = {
+        "SEC EDGAR":   lambda: run_sec_scraper(days_back=max(days_back, 180)),
         "AlleyWatch":  lambda: run_alleywatch_scraper(days_back=days_back),
         "News":        lambda: run_news_scraper(days_back=days_back),
-        "SEC EDGAR":   lambda: run_sec_scraper(days_back=days_back),
         "Delaware":    lambda: run_delaware_scraper(days_back=days_back),
         "Firm Sites":  lambda: run_firm_scraper(),
     }
