@@ -588,7 +588,7 @@
       /* Filtered + sorted deals */
       const rows = useMemo(() => {
         let d = [...deals];
-        if (earlyOnly) d = d.filter(x => !x.amount_usd || x.amount_usd <= 100000000);
+        if (earlyOnly) d = d.filter(x => ["Pre-Seed","Seed","Series A"].includes(x.stage));
         if (stgF !== "All") d = d.filter(x => x.stage === stgF);
         if (catF !== "All") d = d.filter(x => x.category === catF);
         if (cityF !== "All") d = d.filter(x => x.city === cityF);
@@ -758,7 +758,7 @@
             <div style={{width:1,height:16,background:"#1a1b2e"}} />
             <button onClick={()=>setEarlyOnly(!earlyOnly)} className={`pill ${earlyOnly?"on":""}`}
               style={{borderColor:earlyOnly?"#22c55e55":"#1a1b2e",background:earlyOnly?"#22c55e14":"transparent",color:earlyOnly?"#22c55e":"#52536b",fontWeight:earlyOnly?700:500}}>
-              {earlyOnly ? "Early Stage ≤$100M" : "All Stages"}
+              {earlyOnly ? "Early Stage (Pre-Seed / Seed / A)" : "All Stages"}
             </button>
             <div style={{width:1,height:16,background:"#1a1b2e"}} />
             <span style={{fontSize:9.5,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase",color:"#3d3e55"}}>Month</span>
